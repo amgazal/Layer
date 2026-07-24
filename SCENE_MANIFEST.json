@@ -1,0 +1,26 @@
+{
+  "clear": {
+    "filename": "clear.webp",
+    "width": 941,
+    "height": 1672,
+    "bytes": 248364
+  },
+  "cloudy": {
+    "filename": "cloudy.webp",
+    "width": 941,
+    "height": 1672,
+    "bytes": 196486
+  },
+  "rain": {
+    "filename": "rain.webp",
+    "width": 941,
+    "height": 1672,
+    "bytes": 385790
+  },
+  "snow": {
+    "filename": "snow.webp",
+    "width": 941,
+    "height": 1672,
+    "bytes": 313170
+  }
+}
