@@ -36,6 +36,12 @@ jobs:
 
       - name: Build site
         run: npm run build
+        env:
+          # Public values — safe to expose; RLS protects the data.
+          # Add them in: repo → Settings → Secrets and variables → Actions.
+          # If unset, the build still succeeds and the app runs local-only.
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

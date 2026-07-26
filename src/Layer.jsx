@@ -5,6 +5,7 @@ import {
   Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight,
   Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon
 } from "lucide-react";
+import { ensureAuth, pullModel, pushModel, pushProfile, logEvent } from "./lib/sync";
 
 const CAMPUS = {
   name: "Ithaca, NY",
@@ -388,17 +389,43 @@ export default function Layer() {
 
   const commit = useCallback((next) => {
     setModel(next);
-    persist(next);
+    persist(next);                              // local-first: write immediately
+    pushModel(next, totalObservations(next));   // background cloud mirror (no-op if disabled)
   }, [persist]);
 
   useEffect(() => {
     (async () => {
+      // 1) Local is the source of truth for first paint — never blocks on network.
       const saved = await storageGet(MODEL_KEY);
+      let localModel = null;
       if (saved?.value) {
-        try { setModel(normalizeModel(JSON.parse(saved.value))); }
+        try { localModel = normalizeModel(JSON.parse(saved.value)); setModel(localModel); }
         catch {}
       }
       if (mounted.current) setReady(true);
+
+      // 2) In the background, mint the anonymous session and reconcile with cloud.
+      ensureAuth();
+      try {
+        const cloud = await pullModel();
+        if (!mounted.current) return;
+        if (cloud?.model) {
+          const cloudModel = normalizeModel(cloud.model);
+          const localObs = localModel ? totalObservations(localModel) : -1;
+          const cloudObs = totalObservations(cloudModel);
+          // Adopt cloud only if we have nothing local yet, or cloud has learned
+          // more (e.g. this is a new device after signing in). Otherwise push
+          // our richer local copy up so the cloud catches up.
+          if (!localModel || !localModel.seeded || cloudObs > localObs) {
+            setModel(cloudModel);
+            await storageSet(MODEL_KEY, JSON.stringify(cloudModel));
+          } else {
+            pushModel(localModel, localObs);
+          }
+        } else if (localModel?.seeded) {
+          pushModel(localModel, totalObservations(localModel));
+        }
+      } catch { /* offline: local model stands */ }
     })();
   }, []);
 
@@ -419,6 +446,7 @@ export default function Layer() {
       next.regime[k].n = 0.6;
     }
     commit(next);
+    pushProfile({ climate: climateKey, tolerance: tolKey });
   }, [commit]);
 
   const loadWeather = useCallback(async (force = false) => {
@@ -635,6 +663,28 @@ export default function Layer() {
     }
 
     commit(next);
+
+    // Append to the cloud research log — richer than the trimmed local history,
+    // and recorded for every outcome including "didn't follow".
+    logEvent({
+      apparent: plan.depart.apparent,
+      effective: result.effective,
+      actual: plan.depart.actual,
+      wind: plan.depart.wind,
+      precip: plan.depart.precip,
+      condition: result.cond.label,
+      weather_code: plan.depart.code,
+      is_day: (plan.depart.isDay ?? wx?.current?.isDay ?? 1) !== 0,
+      activity,
+      start_offset: startOffset,
+      duration,
+      cycling,
+      band: result.band.key,
+      followed,
+      outcome: direction === 0 ? "right" : direction < 0 ? "cold" : "warm",
+      blame: blameKey || null,
+    });
+
     setAskBlame(null);
     setToast(
       followed === "no"
@@ -647,7 +697,7 @@ export default function Layer() {
               ? "Got it — I’ll call the next one warmer."
               : "Got it — I’ll lighten the next call."
     );
-  }, [plan, result, model, activity, followed, commit]);
+  }, [plan, result, model, activity, followed, commit, startOffset, duration, cycling, wx]);
 
   const onFeedback = (kind) => {
     if (kind === "right") applyFeedback(0, null);
