@@ -58,3 +58,17 @@ This prevents the clothing/activity cards from appearing above the main weather 
 - Weather-change alerts now state the expected temperature difference and the time it may occur.
 - Rain alerts show the peak precipitation probability before the outing ends, and snow receives its own warning.
 - Accessibility improvements include visible keyboard focus, larger touch behaviour, reduced-motion support, and a higher-contrast mode.
+
+
+## Mobile comfort-meter fix
+
+This build fixes the comfort-threat level bars on narrow screens. The meter now uses a four-column CSS grid with an explicit full width, so the None / Low / Mod / High segments remain visible on phones. This package is configured for `/Layer/`.
+
+
+## Night and inclusivity update
+
+- The site now uses Open-Meteo `is_day` data to dim the scenic background automatically at night.
+- Sun exposure is always `None` after daylight ends and no longer affects the personal temperature calculation at night.
+- Clothing visuals use neutral category badges instead of gender-coded emoji garments.
+- Clothing wording has been revised to use category-based, inclusive recommendations.
+- Comfort threat meters now show no filled bar for a `None` threat level.

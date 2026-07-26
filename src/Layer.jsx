@@ -3,7 +3,7 @@ import {
   Sun, Cloud, CloudRain, CloudSnow, CloudDrizzle, CloudFog, CloudSun,
   Wind, Zap, Snowflake, Droplets, Check, Flame, MapPin, RefreshCw,
   Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight,
-  Bike, Clock3, AlertTriangle, UserRound, CircleHelp
+  Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon
 } from "lucide-react";
 
 const CAMPUS = {
@@ -17,6 +17,7 @@ const CAMPUS = {
 const MODEL_KEY = "layer:model:v5";
 const CACHE_KEY = "layer:wx-cache:v5";
 const CACHE_TTL = 15 * 60 * 1000;
+// Open-Meteo is_day drives both automatic night dimming and sun-threat accuracy.
 
 const ASSET_BASE = import.meta.env.BASE_URL;
 const BACKGROUNDS = {
@@ -67,18 +68,18 @@ const EMPTY_MODEL = {
 
 const BANDS = [
   { key: "hot", min: 84, accent: "#E88834", sky: ["#6EA6FF", "#F3B66E"], verdict: "Hot out there", sub: "Keep it light.", layers: [
-      { label: "Lightest breathable top", note: "Linen or loose cotton." },
-      { label: "Shorts or a thin skirt" },
-      { label: "Cap and sunglasses" },
+      { label: "Breathable lightweight top", note: "Choose a loose, airy fabric." },
+      { label: "Lightweight bottoms" },
+      { label: "Sun protection", note: "Sunglasses, a cap, or shade." },
     ] },
   { key: "warm", min: 74, accent: "#E0A32E", sky: ["#7BB5FF", "#F6C56E"], verdict: "Warm and easy", sub: "One layer works.", layers: [
-      { label: "T-shirt" },
-      { label: "Light bottoms" },
+      { label: "T-shirt or breathable top" },
+      { label: "Lightweight bottoms" },
       { label: "Thin layer for indoors", note: "Optional." },
     ] },
   { key: "mild", min: 65, accent: "#7AB560", sky: ["#7BA4CC", "#A8D09E"], verdict: "Comfortable", sub: "No bundling needed.", layers: [
       { label: "T-shirt or long sleeve" },
-      { label: "Light sweater", note: "Optional." },
+      { label: "Light sweater or overshirt", note: "Optional." },
     ] },
   { key: "cool", min: 56, accent: "#4AA78D", sky: ["#738FAF", "#89C9B1"], verdict: "A little cool", sub: "Bring a light layer.", layers: [
       { label: "Long sleeve or light sweater" },
@@ -165,10 +166,15 @@ function pooledOffset(model, t) {
 const totalObservations = (m) => m.regime.cold.n + m.regime.mild.n + m.regime.warm.n;
 const confidence = (m) => Math.round((totalObservations(m) / (totalObservations(m) + 4)) * 100);
 
-function decodeWeather(code) {
+function decodeWeather(code, isDay = 1) {
+  const daytime = Number(isDay) !== 0;
   const make = (label, Icon, extra = {}) => ({ label, Icon, wet: false, snow: false, clear: false, category: "cloudy", ...extra });
-  if (code === 0) return make("Clear", Sun, { clear: true, category: "clear" });
-  if (code <= 2) return make("Partly cloudy", CloudSun, { clear: true, category: "clear" });
+  if (code === 0) return daytime
+    ? make("Clear", Sun, { clear: true, category: "clear" })
+    : make("Clear night", Moon, { clear: true, category: "clear" });
+  if (code <= 2) return daytime
+    ? make("Partly cloudy", CloudSun, { clear: true, category: "clear" })
+    : make("Partly cloudy", CloudMoon, { clear: true, category: "clear" });
   if (code === 3) return make("Overcast", Cloud, { category: "cloudy" });
   if (code === 45 || code === 48) return make("Fog", CloudFog, { category: "cloudy" });
   if (code >= 51 && code <= 57) return make("Drizzle", CloudDrizzle, { wet: true, category: "rain" });
@@ -180,11 +186,11 @@ function decodeWeather(code) {
   return make("Cloudy", Cloud, { category: "cloudy" });
 }
 
-function threatsFor({ effective, wind, cond, precip }) {
+function threatsFor({ effective, wind, cond, precip, isDay }) {
   const cold = effective < 25 ? 3 : effective < 38 ? 2 : effective < 50 ? 1 : 0;
   const windLevel = wind >= 24 ? 3 : wind >= 15 ? 2 : wind >= 8 ? 1 : 0;
   const wet = cond.snow || precip >= 60 ? 3 : precip >= 30 || cond.wet ? 2 : precip >= 15 ? 1 : 0;
-  const sun = cond.clear && effective >= 82 ? 3 : cond.clear && effective >= 72 ? 2 : cond.clear ? 1 : 0;
+  const sun = !isDay ? 0 : cond.clear && effective >= 82 ? 3 : cond.clear && effective >= 72 ? 2 : cond.clear ? 1 : 0;
   return [
     { key: "cold", label: "Cold", Icon: Snowflake, level: cold, blame: "The cold itself got me" },
     { key: "wind", label: "Wind", Icon: Wind, level: windLevel, blame: "The wind cut through" },
@@ -226,6 +232,7 @@ function conditionWindow(hourly, startIndex, durationMinutes) {
   const wind = slice("wind_speed_10m");
   const precip = slice("precipitation_probability");
   const codes = slice("weather_code");
+  const daylight = Array.isArray(hourly.is_day) ? slice("is_day") : hourly.time.slice(startIndex, end + 1).map((value) => { const hour = new Date(value).getHours(); return hour >= 7 && hour < 20 ? 1 : 0; });
   return {
     startIndex,
     endIndex: end,
@@ -234,6 +241,7 @@ function conditionWindow(hourly, startIndex, durationMinutes) {
     wind,
     precip,
     codes,
+    daylight,
     depart: {
       actual: Math.round(actual[0]),
       apparent: Math.round(apparent[0]),
@@ -241,6 +249,7 @@ function conditionWindow(hourly, startIndex, durationMinutes) {
       precip: Math.round(precip[0] ?? 0),
       code: codes[0],
       time: hourly.time[startIndex],
+      isDay: Number(daylight[0] ?? 1),
     },
     minApparent: Math.round(Math.min(...apparent)),
     maxApparent: Math.round(Math.max(...apparent)),
@@ -258,9 +267,14 @@ function humanDate(dateLike) {
   return new Date(dateLike).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
 }
 
-function outfitIcons(i) {
-  const cycle = ["👕", "👖", "🧥", "🧣", "🧤"];
-  return cycle[i % cycle.length];
+function garmentCategory(label) {
+  const value = String(label || "").toLowerCase();
+  if (/boot|shoe|sock/.test(value)) return "SHOES";
+  if (/coat|jacket|parka|shell/.test(value)) return "OUTER";
+  if (/sweater|fleece|hoodie|layer|thermal|overshirt/.test(value)) return "LAYER";
+  if (/bottom|short|pant|skirt/.test(value)) return "LOWER";
+  if (/hat|glove|scarf|cap|sunglass|protection/.test(value)) return "EXTRA";
+  return "TOP";
 }
 
 function weatherSceneKey(rawCode) {
@@ -424,8 +438,8 @@ export default function Layer() {
     }
 
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${CAMPUS.lat}&longitude=${CAMPUS.lon}` +
-      `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation_probability` +
-      `&hourly=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation_probability` +
+      `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation_probability,is_day` +
+      `&hourly=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation_probability,is_day` +
       `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=2`;
 
     try {
@@ -443,6 +457,7 @@ export default function Layer() {
           wind: Math.round(data.current.wind_speed_10m),
           precip: Math.round(data.current.precipitation_probability ?? 0),
           time: data.current.time,
+          isDay: Number(data.current.is_day ?? 1),
         },
         hourly: data.hourly,
       };
@@ -455,7 +470,7 @@ export default function Layer() {
       const now = new Date();
       const hourlyTimes = Array.from({ length: 12 }, (_, i) => new Date(now.getTime() + i * 60 * 60 * 1000).toISOString());
       setWx({
-        current: { actual: 71, apparent: 72, code: 2, wind: 9, precip: 10, time: now.toISOString() },
+        current: { actual: 71, apparent: 72, code: 2, wind: 9, precip: 10, time: now.toISOString(), isDay: now.getHours() >= 7 && now.getHours() < 20 ? 1 : 0 },
         hourly: {
           time: hourlyTimes,
           temperature_2m: [71, 72, 73, 74, 75, 74, 73, 72, 70, 68, 67, 66],
@@ -463,6 +478,7 @@ export default function Layer() {
           wind_speed_10m: [9, 10, 11, 10, 9, 8, 8, 8, 9, 10, 9, 8],
           precipitation_probability: [10, 8, 6, 5, 5, 5, 10, 12, 15, 16, 14, 12],
           weather_code: [2, 2, 2, 1, 1, 2, 2, 3, 3, 3, 2, 2],
+          is_day: hourlyTimes.map((value) => { const hour = new Date(value).getHours(); return hour >= 7 && hour < 20 ? 1 : 0; }),
         },
       });
       setWxState("offline");
@@ -498,6 +514,7 @@ export default function Layer() {
           precip: wx.current.precip,
           code: wx.current.code,
           time: now.toISOString(),
+          isDay: Number(wx.current.isDay ?? windowPlan.depart.isDay ?? 1),
         },
         minApparent: Math.round(Math.min(...apparentValues)),
         maxApparent: Math.round(Math.max(...apparentValues)),
@@ -509,22 +526,23 @@ export default function Layer() {
 
   const result = useMemo(() => {
     if (!plan) return null;
-    const cond = decodeWeather(plan.depart.code);
+    const isDay = Number(plan.depart.isDay ?? 1) !== 0;
+    const cond = decodeWeather(plan.depart.code, isDay ? 1 : 0);
     const base = plan.depart.apparent;
     let eff = base + pooledOffset(model, base);
     const windIntensity = clamp((plan.depart.wind - 6) / 14, 0, 1.4);
     eff -= windIntensity * model.factors.wind;
     if (cond.wet || cond.snow) eff -= model.factors.wet;
-    if (cond.clear && base > 66) eff += model.factors.sun;
+    if (isDay && cond.clear && base > 66) eff += model.factors.sun;
     eff += ACTIVITIES[activity].adj;
     if (cycling) eff += base < 55 ? -4 : base < 72 ? -2 : -1;
 
     const effective = Math.round(eff);
     const band = bandFor(effective);
-    const threats = threatsFor({ effective, wind: plan.depart.wind + (cycling ? 6 : 0), cond, precip: plan.depart.precip });
+    const threats = threatsFor({ effective, wind: plan.depart.wind + (cycling ? 6 : 0), cond, precip: plan.depart.precip, isDay });
     const personalShift = Math.round(eff - base);
     const tempDelta = Math.round(plan.endApparent - plan.depart.apparent);
-    const laterConditions = plan.codes.slice(1).map(decodeWeather);
+    const laterConditions = plan.codes.slice(1).map((code, index) => decodeWeather(code, plan.daylight?.[index + 1] ?? 1));
     const snowSoon = !cond.snow && laterConditions.some((condition) => condition.snow);
     const rainSoon = !cond.wet && !snowSoon && plan.maxPrecip >= 45;
 
@@ -549,7 +567,7 @@ export default function Layer() {
       whyLines.push(`Wind is around ${plan.depart.wind} mph, which can make exposed areas feel cooler.`);
     } else if (cond.wet || plan.depart.precip >= 30) {
       whyLines.push("Wet conditions increase heat loss, so a water-resistant layer is more useful.");
-    } else if (cond.clear && base >= 72) {
+    } else if (isDay && cond.clear && base >= 72) {
       whyLines.push("Direct sun can add warmth, especially during a longer walk.");
     } else if (duration >= 60) {
       whyLines.push(`The recommendation covers about ${duration === 60 ? "an hour" : `${duration / 60} hours`} outside.`);
@@ -570,6 +588,7 @@ export default function Layer() {
       peakPrecip: plan.maxPrecip,
       whyLines: whyLines.slice(0, 3),
       cycling,
+      isDay,
     };
   }, [plan, model, activity, cycling, duration]);
 
@@ -648,6 +667,7 @@ export default function Layer() {
   const cond = result.cond;
   const ConditionIcon = cond.Icon;
   const liveWeatherCode = wx?.current?.code ?? plan.depart.code ?? 3;
+  const liveIsDay = Number(wx?.current?.isDay ?? plan.depart.isDay ?? 1) !== 0;
   const scene = scenicByCode(liveWeatherCode);
   const todayText = humanDate(now);
   const timeText = formatTime(now);
@@ -659,7 +679,7 @@ export default function Layer() {
 
   return (
     <div
-      className={`lyr weather-${scene.key}`}
+      className={`lyr weather-${scene.key}${liveIsDay ? "" : " night-mode"}`}
       data-weather-scene={scene.key}
       style={{ "--accent": accent }}
     >
@@ -751,7 +771,7 @@ export default function Layer() {
             <ul className="wear-list">
               {result?.band.layers.map((l, i) => (
                 <li key={i} className="wear-row">
-                  <span className="wear-emoji">{outfitIcons(i)}</span>
+                  <span className="wear-symbol" aria-hidden="true">{garmentCategory(l.label)}</span>
                   <span className="wear-num">{i + 1}</span>
                   <span className="wear-txt">
                     <span className="wear-name">{l.label}</span>
@@ -836,7 +856,7 @@ export default function Layer() {
                 return (
                   <div key={t.key} className={`threat lv-${t.level}`}>
                     <span className="th-l"><T size={16} strokeWidth={2.2} /> {t.label}</span>
-                    <span className="meter">{[1,2,3,4].map((i) => <span key={i} className={`seg ${i <= Math.max(t.level,1) ? "fill" : ""}`} />)}</span>
+                    <span className="meter">{[1,2,3,4].map((i) => <span key={i} className={`seg ${i <= t.level ? "fill" : ""}`} />)}</span>
                   </div>
                 );
               })}
@@ -863,7 +883,7 @@ export default function Layer() {
               <div className="blame">
                 <div className="blame-h"><span>What got you?</span><button className="icon-btn" onClick={() => setAskBlame(null)}><X size={15} strokeWidth={2.4} /></button></div>
                 <div className="blame-list">
-                  {result?.threats.filter((t) => (askBlame === "cold" ? t.key !== "sun" : true)).map((t) => {
+                  {result?.threats.filter((t) => (result.isDay || t.key !== "sun") && (askBlame === "cold" ? t.key !== "sun" : true)).map((t) => {
                     const T = t.Icon;
                     return (
                       <button key={t.key} className="blame-b" onClick={() => applyFeedback(askBlame === "cold" ? -1 : 1, t.key)}>
@@ -988,6 +1008,25 @@ const css = `
 .weather-snow .backdrop {
   background: linear-gradient(180deg, rgba(27,42,61,.22) 0%, rgba(22,38,57,.34) 32%, rgba(13,29,47,.56) 70%, rgba(8,22,39,.72) 100%);
 }
+.night-mode.weather-clear .scene-image {
+  filter: saturate(.72) contrast(1.08) brightness(.48);
+}
+.night-mode.weather-cloudy .scene-image {
+  filter: saturate(.68) contrast(1.08) brightness(.46);
+}
+.night-mode.weather-rain .scene-image {
+  filter: saturate(.72) contrast(1.1) brightness(.44);
+}
+.night-mode.weather-snow .scene-image {
+  filter: saturate(.64) contrast(1.05) brightness(.55);
+}
+.night-mode .backdrop {
+  background: linear-gradient(180deg, rgba(3,10,23,.44) 0%, rgba(3,10,23,.58) 34%, rgba(3,10,23,.72) 72%, rgba(2,8,18,.84) 100%);
+}
+.night-mode .hero,
+.night-mode .topbar {
+  text-shadow: 0 2px 18px rgba(0,0,0,.36);
+}
 .app-shell {
   position: relative;
   z-index: 1;
@@ -1109,9 +1148,10 @@ const css = `
   display:flex; align-items:center; gap: 18px; padding: 16px 0; border-top: 1px solid rgba(17,32,51,.08);
 }
 .wear-row:first-child { border-top: none; }
-.wear-emoji {
-  width: 48px; height: 48px; border-radius: 999px; display:inline-flex; align-items:center; justify-content:center;
-  background: #FAF2DF; font-size: 24px;
+.wear-symbol {
+  width: 52px; height: 42px; border-radius: 999px; display:inline-flex; align-items:center; justify-content:center;
+  flex-shrink: 0; background: #FAF2DF; color: #8A641F; font-family:'DM Mono', monospace;
+  font-size: 9px; font-weight: 600; letter-spacing: .08em;
 }
 .wear-num { font-size: 18px; color: var(--accent); width: 20px; text-align: right; }
 .wear-txt { display:flex; flex-direction: column; gap: 4px; flex: 1; }
@@ -1366,7 +1406,7 @@ label:has(input:focus-visible) {
   .warnbar span { width: 100%; }
   .tipbar { margin-left: -18px; margin-right: -18px; margin-bottom: -18px; }
   .wear-name, .th-l { font-size: 18px; }
-  .wear-emoji { width: 42px; height: 42px; font-size: 22px; }
+  .wear-symbol { width: 48px; height: 40px; font-size: 8px; }
   .acts, .fb-row { flex-direction: column; }
   .scale { gap: 10px; font-size: 10px; }
   .threat {
