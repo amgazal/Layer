@@ -3,7 +3,8 @@ import {
   Sun, Cloud, CloudRain, CloudSnow, CloudDrizzle, CloudFog, CloudSun,
   Wind, Zap, Snowflake, Droplets, Check, Flame, MapPin, RefreshCw,
   Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight,
-  Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon
+  Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon,
+  HardDrive, ShieldCheck
 } from "lucide-react";
 import {
   ensureAuth, pullModel, pushModel, pushProfile, logEvent,
@@ -547,13 +548,13 @@ function Onboarding({ onDone }) {
         </div>
         <div className="ob-actions">
           <button className="ob-go" disabled={!climate || !tol} onClick={() => onDone(climate, tol, true)}>
-            Continue with cloud backup <ArrowRight size={16} strokeWidth={2.6} />
+            Continue with cloud sync <ArrowRight size={16} strokeWidth={2.6} />
           </button>
           <button className="ob-secondary" disabled={!climate || !tol} onClick={() => onDone(climate, tol, false)}>
             Use only on this device
           </button>
         </div>
-        <p className="ob-note">“Only on this device” keeps the full app and turns cloud backup off.</p>
+        <p className="ob-note">“Only on this device” keeps the full app and turns cloud sync off.</p>
       </div>
     </div>
   );
@@ -561,7 +562,7 @@ function Onboarding({ onDone }) {
 
 /**
  * The "keep your calibration" prompt. Non-blocking, dismissible, and only ever
- * shown once cloud backup is actually working, the user is still anonymous, and
+ * shown once cloud sync is actually working, the user is still anonymous, and
  * they've trained the model enough that saving it is obviously worth it.
  */
 function AccountUpgrade({ ratingCount }) {
@@ -652,6 +653,8 @@ export default function Layer() {
   const [cloudActionBusy, setCloudActionBusy] = useState(false);
   const [weatherRefreshing, setWeatherRefreshing] = useState(false);
   const [rainVideoFailed, setRainVideoFailed] = useState(false);
+  const [rainVideoVersion, setRainVideoVersion] = useState(0);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   useEffect(() => () => { mounted.current = false; }, []);
 
@@ -662,9 +665,27 @@ export default function Layer() {
   useEffect(() => {
     const updateClock = () => setNow(new Date());
     updateClock();
-    const id = window.setInterval(updateClock, 30000);
+
+    // A short interval keeps the displayed minute aligned with the phone clock.
+    // Mobile browsers may delay timers while backgrounded, so visibility/focus
+    // handlers below also update it immediately when the app returns.
+    const id = window.setInterval(updateClock, 10000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!profileOpen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setProfileOpen(false);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [profileOpen]);
 
   const persist = useCallback(async (next) => {
     await storageSet(MODEL_KEY, JSON.stringify(next));
@@ -938,13 +959,20 @@ export default function Layer() {
     const refreshWhenVisible = () => {
       if (document.visibilityState !== "visible") return;
 
-      // Browsers routinely suspend autoplay video in a background tab. Resume
-      // the rain footage immediately, even when the weather data is still fresh.
+      // Timers and media are commonly suspended while a mobile browser is in
+      // the background. Bring both the clock and rain footage back immediately.
+      setNow(new Date());
+      const video = rainVideoRef.current;
       resumeRainVideo();
+      if (video?.paused) {
+        setRainVideoFailed(false);
+        setRainVideoVersion((version) => version + 1);
+      }
 
       const age = weatherUpdatedAt ? Date.now() - weatherUpdatedAt : Infinity;
       if (age > 90 * 1000) {
         loadWeather(true).finally(() => {
+          if (mounted.current) setNow(new Date());
           window.requestAnimationFrame(() => resumeRainVideo());
         });
       }
@@ -972,16 +1000,31 @@ export default function Layer() {
     if (weatherRefreshing) return;
     setWeatherRefreshing(true);
     setRainVideoFailed(false);
+    setNow(new Date());
 
-    // Call play() synchronously inside the tap/click event. That preserves the
-    // browser's user-activation permission and fixes paused video immediately.
+    // Force a fresh media element as well as retrying play(). This is more
+    // reliable on iOS after the decoder has been suspended in another app.
+    setRainVideoVersion((version) => version + 1);
     resumeRainVideo({ restart: true, reload: true });
 
     loadWeather(true).finally(() => {
-      if (mounted.current) setWeatherRefreshing(false);
+      if (mounted.current) {
+        setNow(new Date());
+        setWeatherRefreshing(false);
+      }
       window.requestAnimationFrame(() => resumeRainVideo());
     });
   }, [loadWeather, resumeRainVideo, weatherRefreshing]);
+
+  const openPersonalization = useCallback(() => {
+    setProfileOpen(false);
+    window.requestAnimationFrame(() => {
+      document.getElementById("personalization-section")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }, []);
 
   const outingStart = useMemo(
     () => new Date(now.getTime() + startOffset * 60 * 60 * 1000),
@@ -1276,7 +1319,7 @@ export default function Layer() {
   const learningLabel = ratingCount === 0 ? "Starting profile" : `${learningProgress}% learned`;
   const planningSummary = `${startOffset === 0 ? "Leaving now" : `Leaving ${formatTime(outingStart)}`} • ${DURATIONS.find((d) => d.minutes === duration)?.label || `${duration} min`} outside${cycling ? " • Cycling" : ""}`;
   const weatherAgeMinutes = weatherUpdatedAt == null ? null : Math.max(0, Math.floor((now.getTime() - weatherUpdatedAt) / 60000));
-  const weatherAgeText = weatherAgeMinutes == null ? "" : weatherAgeMinutes < 1 ? "Updated now" : `Updated ${weatherAgeMinutes} min ago`;
+  const weatherAgeText = weatherRefreshing ? "Refreshing…" : weatherAgeMinutes == null ? "" : weatherAgeMinutes < 1 ? "Updated now" : `Updated ${weatherAgeMinutes} min ago`;
 
   return (
     <div
@@ -1294,7 +1337,7 @@ export default function Layer() {
       {liveCond.category === "rain" && !rainVideoFailed && (
         <video
           ref={rainVideoRef}
-          key={`rain-video-${liveCond.wetLevel}`}
+          key={`rain-video-${liveCond.wetLevel}-${rainVideoVersion}`}
           className={`rain-video ${liveCond.wetLevel >= 3 ? "rain-video-heavy" : liveCond.wetLevel === 2 ? "rain-video-mod" : "rain-video-light"}`}
           autoPlay
           muted
@@ -1331,7 +1374,13 @@ export default function Layer() {
             >
               <RefreshCw className="refresh-icon" size={18} strokeWidth={2.2} />
             </button>
-            <button className="round-btn" aria-label="Profile"><UserRound size={18} strokeWidth={2.2} /></button>
+            <button
+              className={`round-btn${profileOpen ? " is-active" : ""}`}
+              aria-label="Open your Layer profile"
+              aria-expanded={profileOpen}
+              aria-controls="layer-profile-panel"
+              onClick={() => setProfileOpen(true)}
+            ><UserRound size={18} strokeWidth={2.2} /></button>
           </div>
         </header>
 
@@ -1531,7 +1580,7 @@ export default function Layer() {
             {toast && <div className="toast">{toast}</div>}
           </section>
 
-          <section className="card glass main-card calibration-card">
+          <section id="personalization-section" className="card glass main-card calibration-card">
             <div className="card-head calibration-head">
               <div>
                 <h2 className="card-h">Personalization</h2>
@@ -1544,9 +1593,9 @@ export default function Layer() {
               <span>{ratingCount === 0 ? "Based on your setup answers" : `${ratingCount} rating${ratingCount === 1 ? "" : "s"}`}</span>
               <span className={`sync-status sync-${cloudState}`}>
                 Saved on this device
-                {cloudState === "active" && " · Cloud backup active"}
+                {cloudState === "active" && " · Cloud sync active"}
                 {cloudState === "connecting" && " · Connecting…"}
-                {cloudState === "unavailable" && " · Cloud backup unavailable"}
+                {cloudState === "unavailable" && " · Cloud sync unavailable"}
                 {cloudState === "device-only" && " only"}
                 {cloudState === "local" && " only · Cloud not configured"}
               </span>
@@ -1565,13 +1614,13 @@ export default function Layer() {
                     : cloudState === "active"
                       ? "Use device only"
                       : cloudState === "unavailable"
-                        ? "Retry cloud backup"
-                        : "Enable cloud backup"}
+                        ? "Retry cloud sync"
+                        : "Enable cloud sync"}
                 </button>
                 <span>
                   {cloudState === "active"
                     ? "Turning this off stops future uploads; local personalization keeps working."
-                    : "Cloud backup is optional and uses an anonymous identifier."}
+                    : "Cloud sync is optional and uses an anonymous identifier."}
                 </span>
               </div>
             )}
@@ -1619,6 +1668,91 @@ export default function Layer() {
           {ENABLE_ACCOUNT_UPGRADE && <AccountUpgrade ratingCount={ratingCount} />}
         </main>
       </div>
+
+      {profileOpen && (
+        <div
+          className="profile-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setProfileOpen(false);
+          }}
+        >
+          <section
+            id="layer-profile-panel"
+            className="profile-panel glass"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-panel-title"
+          >
+            <div className="profile-panel-head">
+              <div>
+                <span className="profile-kicker">Anonymous profile</span>
+                <h2 id="profile-panel-title">Your Layer profile</h2>
+              </div>
+              <button className="icon-btn profile-close" type="button" aria-label="Close profile" onClick={() => setProfileOpen(false)}>
+                <X size={18} strokeWidth={2.4} />
+              </button>
+            </div>
+
+            <p className="profile-intro">
+              Layer personalizes recommendations from your setup and the feedback you choose to give. No name or email is attached to this profile.
+            </p>
+
+            <div className="profile-stat-grid">
+              <div className="profile-stat"><strong>{ratingCount}</strong><span>outings rated</span></div>
+              <div className="profile-stat"><strong>{learningLabel}</strong><span>personalization</span></div>
+            </div>
+
+            <div className="profile-storage-list">
+              <div className="profile-storage-row">
+                <HardDrive size={19} strokeWidth={2.1} />
+                <div><strong>Saved on this device</strong><span>Your recommendations work even without cloud sync.</span></div>
+                <Check size={18} strokeWidth={2.4} className="profile-ok" />
+              </div>
+              <div className="profile-storage-row">
+                <Cloud size={19} strokeWidth={2.1} />
+                <div>
+                  <strong>
+                    {cloudState === "active" ? "Cloud sync active" : cloudState === "connecting" ? "Connecting cloud sync" : cloudState === "unavailable" ? "Cloud sync unavailable" : cloudState === "local" ? "Cloud sync not configured" : "Cloud sync off"}
+                  </strong>
+                  <span>
+                    {cloudState === "active"
+                      ? "Your anonymous model and new feedback are mirrored to Supabase."
+                      : "Your local profile continues working on this device."}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="profile-privacy-note">
+              <ShieldCheck size={18} strokeWidth={2.2} />
+              <span><strong>What cloud sync means:</strong> it mirrors this anonymous browser profile. It does not yet provide cross-device recovery or a normal sign-in account.</span>
+            </div>
+
+            <div className="profile-actions">
+              {cloudState !== "local" && (
+                <button
+                  type="button"
+                  className="profile-primary"
+                  disabled={cloudActionBusy || cloudState === "connecting"}
+                  onClick={handleCloudAction}
+                >
+                  {cloudActionBusy || cloudState === "connecting"
+                    ? "Connecting…"
+                    : cloudState === "active"
+                      ? "Use device only"
+                      : cloudState === "unavailable"
+                        ? "Retry cloud sync"
+                        : "Enable cloud sync"}
+                </button>
+              )}
+              <button type="button" className="profile-secondary" onClick={openPersonalization}>
+                View personalization
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -2030,6 +2164,41 @@ const css = `
 .upgrade-sent { display:flex; align-items:center; gap:10px; color:#2F855A; font-size:13.5px; line-height:1.45; }
 .upgrade-sent svg { flex-shrink:0; }
 
+
+.round-btn.is-active { background: rgba(255,255,255,.28); box-shadow: inset 0 0 0 1px rgba(255,255,255,.28); }
+.profile-overlay {
+  position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(5, 13, 24, .54); backdrop-filter: blur(8px);
+}
+.profile-panel {
+  width: min(520px, 100%); max-height: min(760px, calc(100vh - 40px)); overflow-y: auto;
+  border-radius: 28px; padding: 24px; color: var(--ink); background: rgba(250,251,253,.97);
+  box-shadow: 0 28px 90px rgba(0,0,0,.34);
+}
+.profile-panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.profile-kicker { display:block; margin-bottom:5px; font-family:'DM Mono', monospace; color:#76849A; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
+.profile-panel h2 { margin:0; font-family:'Outfit', sans-serif; font-size:30px; line-height:1.05; }
+.profile-close { flex-shrink:0; }
+.profile-intro { margin:16px 0 20px; color:#5E6D83; line-height:1.55; }
+.profile-stat-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:18px; }
+.profile-stat { padding:16px; border-radius:18px; background:#F1F4F8; display:flex; flex-direction:column; gap:4px; }
+.profile-stat strong { font-family:'Outfit', sans-serif; font-size:22px; }
+.profile-stat span { color:#718097; font-size:12.5px; }
+.profile-storage-list { display:grid; gap:10px; }
+.profile-storage-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:start; padding:15px; border:1px solid #E4EAF1; border-radius:18px; background:white; }
+.profile-storage-row > svg:first-child { color:#62728A; margin-top:2px; }
+.profile-storage-row strong { display:block; margin-bottom:3px; font-size:14px; }
+.profile-storage-row span { display:block; color:#718097; font-size:12.5px; line-height:1.45; }
+.profile-ok { color:#4AA56A; }
+.profile-privacy-note { display:flex; gap:10px; align-items:flex-start; margin:16px 0; padding:13px 14px; border-radius:16px; background:#F5F1E7; color:#5E6D83; font-size:12.5px; line-height:1.5; }
+.profile-privacy-note svg { color:var(--accent); flex-shrink:0; margin-top:1px; }
+.profile-actions { display:flex; gap:10px; flex-wrap:wrap; }
+.profile-primary, .profile-secondary { border-radius:14px; padding:12px 15px; font-weight:700; cursor:pointer; }
+.profile-primary { border:none; background:var(--ink); color:white; }
+.profile-secondary { border:1px solid #D4DDE8; background:white; color:#43516A; }
+.profile-primary:disabled { opacity:.55; cursor:default; }
+.profile-secondary:hover { background:#F5F8FC; }
+
 .loading-screen {
   min-height: 100vh;
   display: grid;
@@ -2155,5 +2324,11 @@ label:has(input:focus-visible) {
   .meter { width: 100%; min-height: 9px; }
   .follow-line, .planner-head, .card-head { align-items: flex-start; }
   .ob-opts-row { grid-template-columns: 1fr; }
+  .profile-overlay { align-items:flex-end; padding:0; }
+  .profile-panel { width:100%; max-height:88vh; border-radius:28px 28px 0 0; padding:22px 18px calc(22px + env(safe-area-inset-bottom)); }
+  .profile-panel h2 { font-size:27px; }
+  .profile-stat-grid { grid-template-columns:1fr 1fr; }
+  .profile-actions { display:grid; grid-template-columns:1fr; }
+  .profile-primary, .profile-secondary { width:100%; }
 }
 `;
