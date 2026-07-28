@@ -89,3 +89,8 @@ This build fixes the comfort-threat level bars on narrow screens. The meter now 
 ## Live rain accuracy
 
 Layer combines current, 15-minute, and hourly Open-Meteo data. The 15-minute feed drives current rain intensity and short outings, while hourly probability supports longer planning. Weather refreshes automatically every five minutes, or every two minutes during active rain.
+
+
+## Live rain footage
+
+When Layer detects live rain, it replaces the synthetic CSS streaks with a muted looping H.264 rain clip. The static rainy image remains available as a poster and accessibility fallback.

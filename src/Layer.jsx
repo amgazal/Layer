@@ -34,6 +34,7 @@ const BACKGROUNDS = {
   rain: `${ASSET_BASE}backgrounds/rain.webp`,
   snow: `${ASSET_BASE}backgrounds/snow.webp`,
 };
+const RAIN_VIDEO = `${ASSET_BASE}backgrounds/rain-loop.mp4`;
 
 const CENTERS = { cold: 33, mild: 60, warm: 82 };
 const KERNEL = 15;
@@ -1182,13 +1183,25 @@ export default function Layer() {
         style={{ backgroundImage: `url(${scene.src})` }}
         aria-hidden="true"
       />
-      <div className="backdrop" />
       {liveCond.category === "rain" && (
-        <div
-          className={`rain-overlay ${liveCond.wetLevel >= 3 ? "rain-heavy" : liveCond.wetLevel === 2 ? "rain-mod" : "rain-light"}`}
+        <video
+          className={`rain-video ${liveCond.wetLevel >= 3 ? "rain-video-heavy" : liveCond.wetLevel === 2 ? "rain-video-mod" : "rain-video-light"}`}
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          poster={BACKGROUNDS.rain}
+          controls={false}
+          disablePictureInPicture
+          tabIndex={-1}
           aria-hidden="true"
-        />
+          onError={(event) => { event.currentTarget.style.display = "none"; }}
+        >
+          <source src={RAIN_VIDEO} type="video/mp4" />
+        </video>
       )}
+      <div className="backdrop" />
       <div className="app-shell">
         <header className="topbar">
           <div className="campus-id">
@@ -1530,30 +1543,36 @@ const css = `
   z-index: 0;
   pointer-events: none;
 }
-/* Animated rain — a real sense of precipitation, scaled to intensity. Sits
-   above the darkening backdrop but below all content, and never intercepts taps. */
-.rain-overlay {
+/* Real rain footage replaces the synthetic streak animation. The static
+   rain image remains underneath as a poster/fallback if autoplay is blocked. */
+.rain-video {
   position: fixed;
-  inset: -20% 0 0 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 0;
   pointer-events: none;
-  background-repeat: repeat;
-  background-image:
-    linear-gradient(102deg, transparent 0 46%, rgba(210,225,240,.55) 46% 48%, transparent 48% 100%),
-    linear-gradient(102deg, transparent 0 72%, rgba(210,225,240,.40) 72% 73.5%, transparent 73.5% 100%);
-  background-size: 22px 22px, 34px 30px;
-  animation: rainfall .5s linear infinite;
-  opacity: .5;
+  object-fit: cover;
+  object-position: center 48%;
+  transform: scale(1.012);
+  filter: saturate(.78) contrast(1.08) brightness(.82);
+  opacity: .94;
 }
-.rain-light { opacity: .28; animation-duration: .7s; }
-.rain-mod   { opacity: .5;  animation-duration: .52s; }
-.rain-heavy { opacity: .72; animation-duration: .34s; background-size: 18px 20px, 26px 24px; }
-.rain-severity-3 .backdrop { background: linear-gradient(180deg, rgba(2,9,19,.42) 0%, rgba(2,9,19,.52) 32%, rgba(2,9,19,.68) 70%, rgba(1,7,16,.82) 100%); }
-@keyframes rainfall {
-  to { background-position: -12px 22px, 8px 30px; }
+.rain-video-light {
+  opacity: .8;
+  filter: saturate(.82) contrast(1.05) brightness(.9);
 }
+.rain-video-mod {
+  opacity: .94;
+  filter: saturate(.76) contrast(1.09) brightness(.8);
+}
+.rain-video-heavy {
+  opacity: 1;
+  filter: saturate(.68) contrast(1.13) brightness(.68);
+}
+.rain-severity-3 .backdrop { background: linear-gradient(180deg, rgba(2,9,19,.36) 0%, rgba(2,9,19,.46) 32%, rgba(2,9,19,.62) 70%, rgba(1,7,16,.78) 100%); }
 @media (prefers-reduced-motion: reduce) {
-  .rain-overlay { animation: none; opacity: .18; }
+  .rain-video { display: none; }
 }
 .weather-clear .backdrop {
   background: linear-gradient(180deg, rgba(7,22,40,.25) 0%, rgba(7,22,40,.36) 30%, rgba(7,22,40,.58) 68%, rgba(7,22,40,.72) 100%);
@@ -1575,6 +1594,9 @@ const css = `
 }
 .night-mode.weather-rain .scene-image {
   filter: saturate(.72) contrast(1.1) brightness(.44);
+}
+.night-mode .rain-video {
+  filter: saturate(.62) contrast(1.12) brightness(.5);
 }
 .night-mode.weather-snow .scene-image {
   filter: saturate(.64) contrast(1.05) brightness(.55);
@@ -1974,6 +1996,7 @@ label:has(input:focus-visible) {
   .weather-clear .scene-image { background-position: 54% 58%; }
   .weather-cloudy .scene-image { background-position: 51% 56%; }
   .weather-rain .scene-image { background-position: 50% 59%; }
+  .rain-video { object-position: 58% center; }
   .weather-snow .scene-image { background-position: 54% 56%; }
   .app-shell { width: min(100vw - 18px, 100%); padding-top: 14px; }
   .content-grid { gap: 14px; }
