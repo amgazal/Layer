@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   Sun, Cloud, CloudRain, CloudSnow, CloudDrizzle, CloudFog, CloudSun,
   Wind, Zap, Snowflake, Droplets, Check, Flame, MapPin, RefreshCw,
@@ -655,6 +656,7 @@ export default function Layer() {
   const [rainVideoFailed, setRainVideoFailed] = useState(false);
   const [rainVideoVersion, setRainVideoVersion] = useState(0);
   const [profileOpen, setProfileOpen] = useState(false);
+  const profilePanelRef = useRef(null);
 
   useEffect(() => () => { mounted.current = false; }, []);
 
@@ -675,14 +677,26 @@ export default function Layer() {
 
   useEffect(() => {
     if (!profileOpen) return undefined;
-    const previousOverflow = document.body.style.overflow;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
     const closeOnEscape = (event) => {
       if (event.key === "Escape") setProfileOpen(false);
     };
+
+    // Rendered through a body portal below. Lock both scrolling elements because
+    // iOS browsers do not consistently honour body overflow on its own.
     document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
     window.addEventListener("keydown", closeOnEscape);
+
+    const focusId = window.requestAnimationFrame(() => {
+      profilePanelRef.current?.focus({ preventScroll: true });
+    });
+
     return () => {
-      document.body.style.overflow = previousOverflow;
+      window.cancelAnimationFrame(focusId);
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [profileOpen]);
@@ -1375,6 +1389,7 @@ export default function Layer() {
               <RefreshCw className="refresh-icon" size={18} strokeWidth={2.2} />
             </button>
             <button
+              type="button"
               className={`round-btn${profileOpen ? " is-active" : ""}`}
               aria-label="Open your Layer profile"
               aria-expanded={profileOpen}
@@ -1669,17 +1684,20 @@ export default function Layer() {
         </main>
       </div>
 
-      {profileOpen && (
+      {profileOpen && typeof document !== "undefined" && createPortal(
         <div
           className="profile-overlay"
           role="presentation"
-          onMouseDown={(event) => {
+          onPointerDown={(event) => {
             if (event.target === event.currentTarget) setProfileOpen(false);
           }}
+          style={{ "--accent": accent }}
         >
           <section
+            ref={profilePanelRef}
             id="layer-profile-panel"
             className="profile-panel glass"
+            tabIndex={-1}
             role="dialog"
             aria-modal="true"
             aria-labelledby="profile-panel-title"
@@ -1752,7 +1770,7 @@ export default function Layer() {
             </div>
           </section>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }
@@ -2167,13 +2185,18 @@ const css = `
 
 .round-btn.is-active { background: rgba(255,255,255,.28); box-shadow: inset 0 0 0 1px rgba(255,255,255,.28); }
 .profile-overlay {
-  position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
-  padding: 24px; background: rgba(5, 13, 24, .54); backdrop-filter: blur(8px);
+  position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh;
+  z-index: 2147483000; isolation: isolate; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(5, 13, 24, .62);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  pointer-events: auto; overscroll-behavior: contain;
+  font-family: 'Instrument Sans', system-ui, sans-serif;
 }
 .profile-panel {
-  width: min(520px, 100%); max-height: min(760px, calc(100vh - 40px)); overflow-y: auto;
-  border-radius: 28px; padding: 24px; color: var(--ink); background: rgba(250,251,253,.97);
-  box-shadow: 0 28px 90px rgba(0,0,0,.34);
+  width: min(520px, 100%); max-height: min(760px, calc(100dvh - 40px)); overflow-y: auto;
+  border-radius: 28px; padding: 24px; color: var(--ink); background: rgba(250,251,253,.985);
+  box-shadow: 0 28px 90px rgba(0,0,0,.34); pointer-events: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch; outline: none;
 }
 .profile-panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
 .profile-kicker { display:block; margin-bottom:5px; font-family:'DM Mono', monospace; color:#76849A; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
@@ -2273,6 +2296,11 @@ label:has(input:focus-visible) {
   .glass { background: rgba(255,255,255,.96); }
 }
 
+@keyframes profileSheetIn {
+  from { opacity: 0; transform: translateY(28px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @media (max-width: 980px) {
   .content-grid { grid-template-columns: 1fr; }
   .hero { order: 1; padding-right: 0; }
@@ -2324,8 +2352,17 @@ label:has(input:focus-visible) {
   .meter { width: 100%; min-height: 9px; }
   .follow-line, .planner-head, .card-head { align-items: flex-start; }
   .ob-opts-row { grid-template-columns: 1fr; }
-  .profile-overlay { align-items:flex-end; padding:0; }
-  .profile-panel { width:100%; max-height:88vh; border-radius:28px 28px 0 0; padding:22px 18px calc(22px + env(safe-area-inset-bottom)); }
+  .profile-overlay {
+    align-items:flex-end; padding: max(8px, env(safe-area-inset-top)) 0 0;
+    background: rgba(5,13,24,.72);
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  .profile-panel {
+    width:100%; max-height:calc(100dvh - max(8px, env(safe-area-inset-top)));
+    border-radius:28px 28px 0 0;
+    padding:22px 18px calc(22px + env(safe-area-inset-bottom));
+    animation: profileSheetIn .22s ease-out both;
+  }
   .profile-panel h2 { font-size:27px; }
   .profile-stat-grid { grid-template-columns:1fr 1fr; }
   .profile-actions { display:grid; grid-template-columns:1fr; }

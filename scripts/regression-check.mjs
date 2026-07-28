@@ -22,6 +22,7 @@ const checks = [
   ["manual refresh restarts rain footage", /handleManualRefresh/.test(source) && /restart: true, reload: true/.test(source)],
   ["manual refresh updates the visible clock", /handleManualRefresh[\s\S]*setNow\(new Date\(\)\)/.test(source)],
   ["profile button opens a real profile panel", /layer-profile-panel/.test(source) && /setProfileOpen\(true\)/.test(source)],
+  ["profile panel uses a body portal for mobile browsers", /createPortal/.test(source) && /document\.body/.test(source) && /100dvh/.test(source)],
   ["cloud sync copy explains the anonymous limitation", /does not yet provide cross-device recovery/.test(source)],
   ["synthetic rain streak overlay is removed", !/rain-overlay/.test(source) && !/@keyframes rainfall/.test(source)],
   ["onboarding heading is not duplicated", (source.match(/Cold is personal\./g) || []).length === 1],
