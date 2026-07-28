@@ -5,7 +5,11 @@ import {
   Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight,
   Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon
 } from "lucide-react";
-import { ensureAuth, pullModel, pushModel, pushProfile, logEvent } from "./lib/sync";
+import {
+  ensureAuth, pullModel, pushModel, pushProfile, logEvent,
+  flushOutbox, setCloudPref, subscribeCloud, retryCloud,
+  subscribeAuth, upgradeWithEmail,
+} from "./lib/sync";
 
 const CAMPUS = {
   name: "Ithaca, NY",
@@ -16,8 +20,11 @@ const CAMPUS = {
 };
 
 const MODEL_KEY = "layer:model:v5";
-const CACHE_KEY = "layer:wx-cache:v5";
-const CACHE_TTL = 15 * 60 * 1000;
+const CACHE_KEY = "layer:wx-cache:v6";
+const CACHE_TTL = 5 * 60 * 1000;
+const WEATHER_REFRESH_MS = 5 * 60 * 1000;
+const ACTIVE_RAIN_REFRESH_MS = 2 * 60 * 1000;
+const ENABLE_ACCOUNT_UPGRADE = false; // turn on only after sign-in + merge UI is complete
 // Open-Meteo is_day drives both automatic night dimming and sun-threat accuracy.
 
 const ASSET_BASE = import.meta.env.BASE_URL;
@@ -40,7 +47,11 @@ const DURATIONS = [
   { minutes: 20, label: "20 min" },
   { minutes: 60, label: "1 hour" },
   { minutes: 120, label: "2 hours" },
+  { minutes: 240, label: "Up to 4 hrs" },
+  { minutes: 360, label: "5+ hrs" },
 ];
+const durationLabel = (minutes) =>
+  DURATIONS.find((d) => d.minutes === minutes)?.label || `${minutes} min`;
 
 const CLIMATES = [
   { key: "tropical", label: "Somewhere hot", note: "Tropical or desert", seed: { cold: -7, mild: -4, warm: 1 } },
@@ -167,55 +178,134 @@ function pooledOffset(model, t) {
 const totalObservations = (m) => m.regime.cold.n + m.regime.mild.n + m.regime.warm.n;
 const confidence = (m) => Math.round((totalObservations(m) / (totalObservations(m) + 4)) * 100);
 
-function decodeWeather(code, isDay = 1) {
+// Actual rainfall rate (mm in the last hour) → 0 none · 1 light · 2 moderate · 3 heavy.
+// Standard meteorological rain-rate bands, so the label matches what you'd feel.
+function rainIntensityFromRate(rateMmPerHour) {
+  const rate = Math.max(0, Number(rateMmPerHour) || 0);
+  if (rate >= 7.5) return 3;
+  if (rate >= 2.5) return 2;
+  if (rate >= 0.2) return 1;
+  return 0;
+}
+
+function rateFrom15MinuteTotal(totalMm) {
+  return Math.max(0, Number(totalMm) || 0) * 4;
+}
+
+function wmoRainSeverity(code) {
+  const value = Number(code);
+  if ([57, 65, 67, 82, 95, 96, 99].includes(value)) return 3;
+  if ([53, 55, 63, 81].includes(value)) return 2;
+  if ([51, 56, 61, 66, 80].includes(value)) return 1;
+  return 0;
+}
+
+function decodeWeather(code, isDay = 1, rainRateMmPerHour = 0) {
+  const value = Number(code);
   const daytime = Number(isDay) !== 0;
-  const make = (label, Icon, extra = {}) => ({ label, Icon, wet: false, snow: false, clear: false, category: "cloudy", ...extra });
-  if (code === 0) return daytime
+  const make = (label, Icon, extra = {}) => ({
+    label, Icon, wet: false, snow: false, clear: false,
+    category: "cloudy", wetLevel: 0, rainRate: 0, thunder: false, ...extra,
+  });
+
+  if (value === 0) return daytime
     ? make("Clear", Sun, { clear: true, category: "clear" })
     : make("Clear night", Moon, { clear: true, category: "clear" });
-  if (code <= 2) return daytime
+  if (value === 1 || value === 2) return daytime
     ? make("Partly cloudy", CloudSun, { clear: true, category: "clear" })
     : make("Partly cloudy", CloudMoon, { clear: true, category: "clear" });
-  if (code === 3) return make("Overcast", Cloud, { category: "cloudy" });
-  if (code === 45 || code === 48) return make("Fog", CloudFog, { category: "cloudy" });
-  if (code >= 51 && code <= 57) return make("Drizzle", CloudDrizzle, { wet: true, category: "rain" });
-  if (code >= 61 && code <= 67) return make("Rain", CloudRain, { wet: true, category: "rain" });
-  if (code >= 71 && code <= 77) return make("Snow", CloudSnow, { snow: true, category: "snow" });
-  if (code >= 80 && code <= 82) return make("Showers", CloudRain, { wet: true, category: "rain" });
-  if (code >= 85 && code <= 86) return make("Snow showers", CloudSnow, { snow: true, category: "snow" });
-  if (code >= 95) return make("Thunderstorm", Zap, { wet: true, category: "rain" });
+  if (value === 3) return make("Overcast", Cloud, { category: "cloudy" });
+  if (value === 45 || value === 48) return make("Fog", CloudFog, { category: "cloudy" });
+
+  if ((value >= 71 && value <= 77) || (value >= 85 && value <= 86)) {
+    const heavy = value === 75 || value === 86;
+    const moderate = value === 73;
+    return make(
+      heavy ? "Heavy snow" : moderate ? "Snow" : "Light snow",
+      CloudSnow,
+      { snow: true, category: "snow", wetLevel: heavy ? 3 : moderate ? 2 : 1 },
+    );
+  }
+
+  const thunder = value >= 95 && value <= 99;
+  const drizzle = value >= 51 && value <= 57;
+  const measured = rainIntensityFromRate(rainRateMmPerHour);
+  // A short-range model can lag a rapidly forming shower. Measured/modelled
+  // 15-minute precipitation therefore counts as rain even when the WMO code
+  // still says overcast.
+  const liquid = measured > 0 || drizzle || (value >= 61 && value <= 67) || (value >= 80 && value <= 82) || thunder;
+  if (liquid) {
+    const intensity = Math.max(wmoRainSeverity(value), measured);
+    const freezing = value === 56 || value === 57 || value === 66 || value === 67;
+    const hail = value === 96 || value === 99;
+
+    let label;
+    if (hail) label = "Thunderstorm with hail";
+    else if (thunder) label = "Thunderstorm";
+    else if (freezing) label = intensity >= 3 ? "Heavy freezing rain" : "Freezing rain";
+    else if (intensity >= 3) label = "Heavy rain";
+    else if (intensity === 2) label = drizzle ? "Dense drizzle" : "Rain";
+    else label = drizzle ? "Drizzle" : "Light rain";
+
+    return make(label, thunder ? Zap : intensity >= 2 ? CloudRain : CloudDrizzle, {
+      wet: true,
+      category: "rain",
+      wetLevel: Math.max(1, intensity),
+      rainRate: Math.max(0, Number(rainRateMmPerHour) || 0),
+      thunder,
+      freezing,
+    });
+  }
+
   return make("Cloudy", Cloud, { category: "cloudy" });
 }
 
-function threatsFor({ effective, wind, cond, precip, isDay }) {
+function threatsFor({ effective, wind, gust, cond, precip, peakRainRate, isDay }) {
   const cold = effective < 25 ? 3 : effective < 38 ? 2 : effective < 50 ? 1 : 0;
-  const windLevel = wind >= 24 ? 3 : wind >= 15 ? 2 : wind >= 8 ? 1 : 0;
-  const wet = cond.snow || precip >= 60 ? 3 : precip >= 30 || cond.wet ? 2 : precip >= 15 ? 1 : 0;
-  const sun = !isDay ? 0 : cond.clear && effective >= 82 ? 3 : cond.clear && effective >= 72 ? 2 : cond.clear ? 1 : 0;
-  return [
+  const windExposure = Math.max(Number(wind) || 0, (Number(gust) || 0) * 0.75);
+  const windLevel = windExposure >= 24 ? 3 : windExposure >= 15 ? 2 : windExposure >= 8 ? 1 : 0;
+  // Two signals: what's measured falling right now (cond.wetLevel, from actual
+  // mm) and the forecast chance (precip %). Take the stronger, so active heavy
+  // rain shows High even when the hourly probability lags behind reality.
+  const wetFromCond = cond.wetLevel || (cond.snow ? 2 : cond.wet ? 2 : 0);
+  const wetFromRate = rainIntensityFromRate(peakRainRate);
+  const wetFromProb = precip >= 70 ? 3 : precip >= 40 ? 2 : precip >= 20 ? 1 : 0;
+  const wet = Math.max(wetFromCond, wetFromRate, wetFromProb);
+  const threats = [
     { key: "cold", label: "Cold", Icon: Snowflake, level: cold, blame: "The cold itself got me" },
     { key: "wind", label: "Wind", Icon: Wind, level: windLevel, blame: "The wind cut through" },
     { key: "wet", label: "Wet", Icon: Droplets, level: wet, blame: "I got wet" },
-    { key: "sun", label: "Sun", Icon: Sun, level: sun, blame: "The sun was punishing" },
   ];
+
+  // At night there is no direct-sun exposure to display or calibrate.
+  if (isDay) {
+    const sun = cond.clear && effective >= 82 ? 3 : cond.clear && effective >= 72 ? 2 : cond.clear ? 1 : 0;
+    threats.push({ key: "sun", label: "Sun", Icon: Sun, level: sun, blame: "The sun was punishing" });
+  }
+  return threats;
 }
 
-function extrasFor(threats, cond) {
+function extrasFor(threats, cond, peakRainRate = 0) {
   const out = [];
   const lv = (k) => threats.find((t) => t.key === k)?.level ?? 0;
   if (cond.snow) out.push({ Icon: Snowflake, text: "Waterproof boots — the ground will soak through." });
+  else if (cond.wetLevel >= 3 || rainIntensityFromRate(peakRainRate) >= 3) out.push({ Icon: Umbrella, text: "Heavy rain — use a waterproof shell; an umbrella alone may not be enough." });
   else if (lv("wet") >= 2) out.push({ Icon: Umbrella, text: "Take a shell or umbrella." });
   if (lv("wind") >= 2) out.push({ Icon: Wind, text: "Make the outer layer wind resistant." });
   if (lv("sun") >= 2) out.push({ Icon: Sun, text: "Sunglasses and sunscreen if you’ll be out a while." });
   return out;
 }
 
-function getClosestHourlyIndex(times, targetMs) {
+function asDate(value) {
+  return typeof value === "number" ? new Date(value * 1000) : new Date(value);
+}
+
+function getClosestIndex(times, targetMs) {
   if (!times?.length) return 0;
   let best = 0;
   let minDiff = Infinity;
   for (let i = 0; i < times.length; i++) {
-    const diff = Math.abs(new Date(times[i]).getTime() - targetMs);
+    const diff = Math.abs(asDate(times[i]).getTime() - targetMs);
     if (diff < minDiff) {
       minDiff = diff;
       best = i;
@@ -224,30 +314,44 @@ function getClosestHourlyIndex(times, targetMs) {
   return best;
 }
 
+function probabilityAt(hourly, targetMs) {
+  if (!hourly?.time?.length || !Array.isArray(hourly.precipitation_probability)) return 0;
+  return Number(hourly.precipitation_probability[getClosestIndex(hourly.time, targetMs)] ?? 0);
+}
+
 function conditionWindow(hourly, startIndex, durationMinutes) {
   const hours = Math.max(1, Math.ceil(durationMinutes / 60));
   const end = Math.min(hourly.time.length - 1, startIndex + hours);
-  const slice = (key) => hourly[key].slice(startIndex, end + 1);
+  const slice = (key, fallback = []) => Array.isArray(hourly[key]) ? hourly[key].slice(startIndex, end + 1) : fallback;
   const apparent = slice("apparent_temperature");
   const actual = slice("temperature_2m");
-  const wind = slice("wind_speed_10m");
-  const precip = slice("precipitation_probability");
-  const codes = slice("weather_code");
-  const daylight = Array.isArray(hourly.is_day) ? slice("is_day") : hourly.time.slice(startIndex, end + 1).map((value) => { const hour = new Date(value).getHours(); return hour >= 7 && hour < 20 ? 1 : 0; });
+  const wind = slice("wind_speed_10m", actual.map(() => 0));
+  const gust = slice("wind_gusts_10m", wind);
+  const precip = slice("precipitation_probability", actual.map(() => 0));
+  const precipRates = slice("precipitation", actual.map(() => 0)).map((value) => Math.max(0, Number(value) || 0));
+  const codes = slice("weather_code", actual.map(() => 3));
+  const daylight = slice("is_day", hourly.time.slice(startIndex, end + 1).map((value) => {
+    const hour = asDate(value).getHours();
+    return hour >= 7 && hour < 20 ? 1 : 0;
+  }));
   return {
     startIndex,
     endIndex: end,
     apparent,
     actual,
     wind,
+    gust,
     precip,
+    precipRates,
     codes,
     daylight,
     depart: {
       actual: Math.round(actual[0]),
       apparent: Math.round(apparent[0]),
-      wind: Math.round(wind[0]),
+      wind: Math.round(wind[0] ?? 0),
+      gust: Math.round(gust[0] ?? wind[0] ?? 0),
       precip: Math.round(precip[0] ?? 0),
+      precipRate: Number(precipRates[0] ?? 0),
       code: codes[0],
       time: hourly.time[startIndex],
       isDay: Number(daylight[0] ?? 1),
@@ -257,15 +361,71 @@ function conditionWindow(hourly, startIndex, durationMinutes) {
     endApparent: Math.round(apparent[apparent.length - 1]),
     maxPrecip: Math.round(Math.max(...precip)),
     endPrecip: Math.round(precip[precip.length - 1] ?? 0),
+    peakRainRate: Math.max(0, ...precipRates),
+  };
+}
+
+function conditionWindow15(minutely, hourly, startMs, durationMinutes) {
+  if (!minutely?.time?.length) return null;
+  const startIndex = getClosestIndex(minutely.time, startMs);
+  const endMs = startMs + durationMinutes * 60 * 1000;
+  let endIndex = startIndex;
+  while (endIndex + 1 < minutely.time.length && asDate(minutely.time[endIndex + 1]).getTime() <= endMs + 7.5 * 60 * 1000) {
+    endIndex += 1;
+  }
+  if (endIndex === startIndex && endIndex + 1 < minutely.time.length) endIndex += 1;
+
+  const slice = (key, fallback = []) => Array.isArray(minutely[key]) ? minutely[key].slice(startIndex, endIndex + 1) : fallback;
+  const actual = slice("temperature_2m");
+  const apparent = slice("apparent_temperature", actual);
+  const wind = slice("wind_speed_10m", actual.map(() => 0));
+  const gust = slice("wind_gusts_10m", wind);
+  const precipitation15 = slice("precipitation", actual.map(() => 0));
+  const precipRates = precipitation15.map(rateFrom15MinuteTotal);
+  const codes = slice("weather_code", actual.map(() => 3));
+  const daylight = slice("is_day", actual.map((_, index) => {
+    const hour = asDate(minutely.time[startIndex + index]).getHours();
+    return hour >= 7 && hour < 20 ? 1 : 0;
+  }));
+  const precip = minutely.time.slice(startIndex, endIndex + 1).map((time) => probabilityAt(hourly, asDate(time).getTime()));
+
+  return {
+    startIndex,
+    endIndex,
+    apparent,
+    actual,
+    wind,
+    gust,
+    precip,
+    precipRates,
+    codes,
+    daylight,
+    depart: {
+      actual: Math.round(actual[0]),
+      apparent: Math.round(apparent[0]),
+      wind: Math.round(wind[0] ?? 0),
+      gust: Math.round(gust[0] ?? wind[0] ?? 0),
+      precip: Math.round(precip[0] ?? 0),
+      precipRate: Number(precipRates[0] ?? 0),
+      code: codes[0],
+      time: minutely.time[startIndex],
+      isDay: Number(daylight[0] ?? 1),
+    },
+    minApparent: Math.round(Math.min(...apparent)),
+    maxApparent: Math.round(Math.max(...apparent)),
+    endApparent: Math.round(apparent[apparent.length - 1]),
+    maxPrecip: Math.round(Math.max(...precip)),
+    endPrecip: Math.round(precip[precip.length - 1] ?? 0),
+    peakRainRate: Math.max(0, ...precipRates),
   };
 }
 
 function formatTime(dateLike) {
-  return new Date(dateLike).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return asDate(dateLike).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
 }
 
 function humanDate(dateLike) {
-  return new Date(dateLike).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+  return asDate(dateLike).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", timeZone: "America/New_York" });
 }
 
 function garmentCategory(label) {
@@ -348,10 +508,91 @@ function Onboarding({ onDone }) {
             ))}
           </div>
         </div>
-        <button className="ob-go" disabled={!climate || !tol} onClick={() => onDone(climate, tol)}>
-          Start <ArrowRight size={16} strokeWidth={2.6} />
+        <div className="ob-privacy">
+          Layer saves your setup answers and outfit feedback to improve your
+          recommendations. It uses an anonymous identifier — no name, email, or
+          precise location is collected.
+        </div>
+        <div className="ob-actions">
+          <button className="ob-go" disabled={!climate || !tol} onClick={() => onDone(climate, tol, true)}>
+            Continue with cloud backup <ArrowRight size={16} strokeWidth={2.6} />
+          </button>
+          <button className="ob-secondary" disabled={!climate || !tol} onClick={() => onDone(climate, tol, false)}>
+            Use only on this device
+          </button>
+        </div>
+        <p className="ob-note">“Only on this device” keeps the full app and turns cloud backup off.</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The "keep your calibration" prompt. Non-blocking, dismissible, and only ever
+ * shown once cloud backup is actually working, the user is still anonymous, and
+ * they've trained the model enough that saving it is obviously worth it.
+ */
+function AccountUpgrade({ ratingCount }) {
+  const [authStatus, setAuthStatus] = useState("none");
+  const [cloud, setCloud] = useState("local");
+  const [dismissed, setDismissed] = useState(() => {
+    try { return window.localStorage?.getItem("layer:upgrade-dismissed") === "1"; } catch { return false; }
+  });
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState("idle"); // idle | sending | sent | error
+  const [err, setErr] = useState("");
+
+  useEffect(() => subscribeAuth((a) => setAuthStatus(a.status)), []);
+  useEffect(() => subscribeCloud(setCloud), []);
+
+  const dismiss = () => {
+    setDismissed(true);
+    try { window.localStorage?.setItem("layer:upgrade-dismissed", "1"); } catch {}
+  };
+
+  const submit = async () => {
+    if (!/^\S+@\S+\.\S+$/.test(email)) { setErr("Enter a valid email address."); setState("error"); return; }
+    setState("sending"); setErr("");
+    const { ok, error } = await upgradeWithEmail(email.trim());
+    if (ok) setState("sent");
+    else { setErr(error || "Something went wrong."); setState("error"); }
+  };
+
+  const eligible = cloud === "active" && authStatus === "anonymous" && ratingCount >= 4 && !dismissed;
+  if (state === "sent") {
+    return (
+      <div className="card upgrade-card">
+        <div className="upgrade-sent">
+          <Check size={18} strokeWidth={2.6} />
+          <span>Check your email to confirm the identity. Cross-device sign-in will be enabled in a later account update.</span>
+        </div>
+      </div>
+    );
+  }
+  if (!eligible) return null;
+
+  return (
+    <div className="card upgrade-card">
+      <button className="upgrade-x" onClick={dismiss} aria-label="Dismiss">
+        <X size={15} strokeWidth={2.4} />
+      </button>
+      <div className="upgrade-h">Keep your calibration</div>
+      <p className="upgrade-p">
+        You’ve trained Layer {ratingCount} times. Attach an email to make this anonymous
+        profile permanent. Cross-device sign-in is being completed separately.
+      </p>
+      <div className="upgrade-row">
+        <input
+          className="upgrade-input"
+          type="email" inputMode="email" placeholder="you@example.com"
+          value={email} onChange={(e) => { setEmail(e.target.value); if (state === "error") setState("idle"); }}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+        />
+        <button className="upgrade-go" onClick={submit} disabled={state === "sending"}>
+          {state === "sending" ? "Sending…" : "Save"}
         </button>
       </div>
+      {state === "error" && <div className="upgrade-err">{err}</div>}
     </div>
   );
 }
@@ -362,6 +603,7 @@ export default function Layer() {
   const [ready, setReady] = useState(false);
   const [wx, setWx] = useState(null);
   const [wxState, setWxState] = useState("loading");
+  const [weatherUpdatedAt, setWeatherUpdatedAt] = useState(null);
   const [activity, setActivity] = useState("walking");
   const [planOpen, setPlanOpen] = useState(false);
   const [startOffset, setStartOffset] = useState(0);
@@ -373,8 +615,14 @@ export default function Layer() {
   const [showModel, setShowModel] = useState(false);
   const [showWhy, setShowWhy] = useState(false);
   const [now, setNow] = useState(() => new Date());
+  const [cloudState, setCloudState] = useState("connecting");
+  const [cloudActionBusy, setCloudActionBusy] = useState(false);
 
   useEffect(() => () => { mounted.current = false; }, []);
+
+  // Reflect background sync status in the UI (device-only | local | connecting
+  // | active | unavailable) so calibration storage is never a mystery.
+  useEffect(() => subscribeCloud((s) => { if (mounted.current) setCloudState(s); }), []);
 
   useEffect(() => {
     const updateClock = () => setNow(new Date());
@@ -406,6 +654,7 @@ export default function Layer() {
 
       // 2) In the background, mint the anonymous session and reconcile with cloud.
       ensureAuth();
+      flushOutbox();  // resend any feedback events queued while offline last time
       try {
         const cloud = await pullModel();
         if (!mounted.current) return;
@@ -436,7 +685,10 @@ export default function Layer() {
     });
   }, []);
 
-  const seed = useCallback((climateKey, tolKey) => {
+  const seed = useCallback((climateKey, tolKey, allowCloud = true) => {
+    // Record the consent choice BEFORE any model change triggers a sync.
+    setCloudPref(allowCloud);
+    setCloudState(allowCloud ? "connecting" : "device-only");
     const climate = CLIMATES.find((x) => x.key === climateKey);
     const tol = TOLERANCE.find((x) => x.key === tolKey);
     const next = deepCopy(EMPTY_MODEL);
@@ -449,71 +701,177 @@ export default function Layer() {
     pushProfile({ climate: climateKey, tolerance: tolKey });
   }, [commit]);
 
+  const handleCloudAction = useCallback(async () => {
+    if (cloudActionBusy) return;
+
+    if (cloudState === "active") {
+      setCloudPref(false);
+      setCloudState("device-only");
+      return;
+    }
+
+    if (cloudState === "connecting") return;
+
+    if (cloudState === "local") return; // deployment has no Supabase config
+
+    setCloudActionBusy(true);
+    setCloudPref(true);
+    setCloudState("connecting");
+    try {
+      const connected = await retryCloud();
+      if (!connected) return;
+
+      const cloud = await pullModel();
+      if (cloud?.model) {
+        const cloudModel = normalizeModel(cloud.model);
+        const localObs = totalObservations(model);
+        const cloudObs = totalObservations(cloudModel);
+        if (!model.seeded || cloudObs > localObs) {
+          setModel(cloudModel);
+          await storageSet(MODEL_KEY, JSON.stringify(cloudModel));
+        } else {
+          pushModel(model, localObs);
+        }
+      } else if (model.seeded) {
+        pushModel(model, totalObservations(model));
+      }
+      flushOutbox();
+    } finally {
+      setCloudActionBusy(false);
+    }
+  }, [cloudActionBusy, cloudState, model]);
+
   const loadWeather = useCallback(async (force = false) => {
-    setWxState("loading");
+    let cached = null;
     if (!force) {
-      const c = await storageGet(CACHE_KEY);
-      if (c?.value) {
+      const stored = await storageGet(CACHE_KEY);
+      if (stored?.value) {
         try {
-          const parsed = JSON.parse(c.value);
+          const parsed = JSON.parse(stored.value);
           if (Date.now() - parsed.at < CACHE_TTL) {
-            setWx(parsed.data);
-            setWxState("cached");
-            return;
+            cached = parsed;
+            if (mounted.current) {
+              setWx(parsed.data);
+              setWeatherUpdatedAt(parsed.at);
+              setWxState("cached");
+            }
           }
         } catch {}
       }
     }
 
+    if (!cached && mounted.current) setWxState("loading");
+
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${CAMPUS.lat}&longitude=${CAMPUS.lon}` +
-      `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation_probability,is_day` +
-      `&hourly=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation_probability,is_day` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=2`;
+      `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,rain,showers,precipitation_probability,is_day` +
+      `&minutely_15=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,rain,showers,is_day` +
+      `&hourly=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,precipitation_probability,is_day` +
+      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FNew_York&timeformat=unixtime&forecast_minutely_15=96&forecast_days=2`;
 
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const timer = setTimeout(() => ctrl.abort(), 10000);
       const res = await fetch(url, { signal: ctrl.signal });
       clearTimeout(timer);
-      if (!res.ok) throw new Error("bad response");
+      if (!res.ok) throw new Error(`weather request failed (${res.status})`);
       const data = await res.json();
+
+      const currentMs = typeof data.current?.time === "number" ? data.current.time * 1000 : Date.now();
+      const minuteIndex = data.minutely_15?.time?.length ? getClosestIndex(data.minutely_15.time, currentMs) : -1;
+      const minutelyPrecip = minuteIndex >= 0 ? Number(data.minutely_15.precipitation?.[minuteIndex] ?? 0) : null;
+      const rainRate = minutelyPrecip == null
+        ? rateFrom15MinuteTotal(data.current?.precipitation ?? 0)
+        : rateFrom15MinuteTotal(minutelyPrecip);
+      const currentCode = minuteIndex >= 0
+        ? Number(data.minutely_15.weather_code?.[minuteIndex] ?? data.current.weather_code)
+        : Number(data.current.weather_code);
+      const currentIsDay = minuteIndex >= 0
+        ? Number(data.minutely_15.is_day?.[minuteIndex] ?? data.current.is_day ?? 1)
+        : Number(data.current.is_day ?? 1);
+      const currentWind = minuteIndex >= 0
+        ? Number(data.minutely_15.wind_speed_10m?.[minuteIndex] ?? data.current.wind_speed_10m ?? 0)
+        : Number(data.current.wind_speed_10m ?? 0);
+      const currentGust = minuteIndex >= 0
+        ? Number(data.minutely_15.wind_gusts_10m?.[minuteIndex] ?? data.current.wind_gusts_10m ?? currentWind)
+        : Number(data.current.wind_gusts_10m ?? currentWind);
+
       const payload = {
         current: {
           actual: Math.round(data.current.temperature_2m),
           apparent: Math.round(data.current.apparent_temperature),
-          code: data.current.weather_code,
-          wind: Math.round(data.current.wind_speed_10m),
+          code: currentCode,
+          wind: Math.round(currentWind),
+          gust: Math.round(currentGust),
           precip: Math.round(data.current.precipitation_probability ?? 0),
+          precipRate: rainRate,
           time: data.current.time,
-          isDay: Number(data.current.is_day ?? 1),
+          isDay: currentIsDay,
         },
+        minutely: data.minutely_15 ?? null,
         hourly: data.hourly,
       };
+      const fetchedAt = Date.now();
       if (!mounted.current) return;
       setWx(payload);
+      setWeatherUpdatedAt(fetchedAt);
       setWxState("live");
-      await storageSet(CACHE_KEY, JSON.stringify({ at: Date.now(), data: payload }));
-    } catch {
+      await storageSet(CACHE_KEY, JSON.stringify({ at: fetchedAt, data: payload }));
+    } catch (error) {
       if (!mounted.current) return;
-      const now = new Date();
-      const hourlyTimes = Array.from({ length: 12 }, (_, i) => new Date(now.getTime() + i * 60 * 60 * 1000).toISOString());
+      if (cached) {
+        setWxState("cached");
+        return;
+      }
+
+      const fallbackNow = new Date();
+      const hourlyTimes = Array.from({ length: 12 }, (_, i) => new Date(fallbackNow.getTime() + i * 60 * 60 * 1000).toISOString());
       setWx({
-        current: { actual: 71, apparent: 72, code: 2, wind: 9, precip: 10, time: now.toISOString(), isDay: now.getHours() >= 7 && now.getHours() < 20 ? 1 : 0 },
+        current: { actual: 71, apparent: 72, code: 2, wind: 9, gust: 12, precip: 10, precipRate: 0, time: fallbackNow.toISOString(), isDay: fallbackNow.getHours() >= 7 && fallbackNow.getHours() < 20 ? 1 : 0 },
+        minutely: null,
         hourly: {
           time: hourlyTimes,
           temperature_2m: [71, 72, 73, 74, 75, 74, 73, 72, 70, 68, 67, 66],
           apparent_temperature: [72, 73, 74, 75, 76, 75, 74, 73, 71, 69, 68, 67],
           wind_speed_10m: [9, 10, 11, 10, 9, 8, 8, 8, 9, 10, 9, 8],
+          wind_gusts_10m: [12, 14, 15, 14, 13, 12, 12, 12, 14, 15, 14, 12],
           precipitation_probability: [10, 8, 6, 5, 5, 5, 10, 12, 15, 16, 14, 12],
+          precipitation: hourlyTimes.map(() => 0),
           weather_code: [2, 2, 2, 1, 1, 2, 2, 3, 3, 3, 2, 2],
-          is_day: hourlyTimes.map((value) => { const hour = new Date(value).getHours(); return hour >= 7 && hour < 20 ? 1 : 0; }),
+          is_day: hourlyTimes.map((value) => { const hour = asDate(value).getHours(); return hour >= 7 && hour < 20 ? 1 : 0; }),
         },
       });
+      setWeatherUpdatedAt(Date.now());
       setWxState("offline");
+      console.warn("[weather] using sample data:", error?.message || error);
     }
   }, []);
 
   useEffect(() => { loadWeather(); }, [loadWeather]);
+
+
+  useEffect(() => {
+    const current = wx?.current;
+    const currentCond = current
+      ? decodeWeather(current.code, current.isDay, current.precipRate)
+      : null;
+    const intervalMs = currentCond?.wet ? ACTIVE_RAIN_REFRESH_MS : WEATHER_REFRESH_MS;
+    const id = window.setInterval(() => loadWeather(true), intervalMs);
+    return () => window.clearInterval(id);
+  }, [loadWeather, wx?.current?.code, wx?.current?.precipRate, wx?.current?.isDay]);
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const age = weatherUpdatedAt ? Date.now() - weatherUpdatedAt : Infinity;
+      if (age > 90 * 1000) loadWeather(true);
+    };
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshWhenVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshWhenVisible);
+    };
+  }, [loadWeather, weatherUpdatedAt]);
 
   const outingStart = useMemo(
     () => new Date(now.getTime() + startOffset * 60 * 60 * 1000),
@@ -527,11 +885,14 @@ export default function Layer() {
 
   const plan = useMemo(() => {
     if (!wx?.hourly?.time?.length) return null;
-    const index = getClosestHourlyIndex(wx.hourly.time, outingStart.getTime());
-    const windowPlan = conditionWindow(wx.hourly, index, duration);
+    const startMs = outingStart.getTime();
+    const minutePlan = conditionWindow15(wx.minutely, wx.hourly, startMs, duration);
+    const hourlyIndex = getClosestIndex(wx.hourly.time, startMs);
+    const windowPlan = minutePlan ?? conditionWindow(wx.hourly, hourlyIndex, duration);
 
     if (startOffset === 0 && wx.current) {
       const apparentValues = [wx.current.apparent, ...windowPlan.apparent].filter(Number.isFinite);
+      const rainRates = [wx.current.precipRate, ...(windowPlan.precipRates ?? [])].filter(Number.isFinite);
       return {
         ...windowPlan,
         depart: {
@@ -539,13 +900,16 @@ export default function Layer() {
           actual: wx.current.actual,
           apparent: wx.current.apparent,
           wind: wx.current.wind,
+          gust: wx.current.gust ?? windowPlan.depart.gust ?? wx.current.wind,
           precip: wx.current.precip,
+          precipRate: Number(wx.current.precipRate ?? windowPlan.depart.precipRate ?? 0),
           code: wx.current.code,
           time: now.toISOString(),
           isDay: Number(wx.current.isDay ?? windowPlan.depart.isDay ?? 1),
         },
         minApparent: Math.round(Math.min(...apparentValues)),
         maxApparent: Math.round(Math.max(...apparentValues)),
+        peakRainRate: Math.max(0, ...rainRates),
       };
     }
 
@@ -555,7 +919,7 @@ export default function Layer() {
   const result = useMemo(() => {
     if (!plan) return null;
     const isDay = Number(plan.depart.isDay ?? 1) !== 0;
-    const cond = decodeWeather(plan.depart.code, isDay ? 1 : 0);
+    const cond = decodeWeather(plan.depart.code, isDay ? 1 : 0, plan.depart.precipRate);
     const base = plan.depart.apparent;
     let eff = base + pooledOffset(model, base);
     const windIntensity = clamp((plan.depart.wind - 6) / 14, 0, 1.4);
@@ -566,13 +930,33 @@ export default function Layer() {
     if (cycling) eff += base < 55 ? -4 : base < 72 ? -2 : -1;
 
     const effective = Math.round(eff);
-    const band = bandFor(effective);
-    const threats = threatsFor({ effective, wind: plan.depart.wind + (cycling ? 6 : 0), cond, precip: plan.depart.precip, isDay });
+    const baseBand = bandFor(effective);
+    const band = {
+      ...baseBand,
+      layers: isDay
+        ? baseBand.layers
+        : baseBand.layers.filter((layer) => !/sun protection|sunglasses|shade/i.test(layer.label)),
+    };
+    const threats = threatsFor({
+      effective,
+      wind: plan.depart.wind + (cycling ? 6 : 0),
+      gust: plan.depart.gust + (cycling ? 6 : 0),
+      cond,
+      precip: plan.maxPrecip,
+      peakRainRate: plan.peakRainRate,
+      isDay,
+    });
     const personalShift = Math.round(eff - base);
     const tempDelta = Math.round(plan.endApparent - plan.depart.apparent);
-    const laterConditions = plan.codes.slice(1).map((code, index) => decodeWeather(code, plan.daylight?.[index + 1] ?? 1));
+    const laterConditions = plan.codes.slice(1).map((code, index) => decodeWeather(code, plan.daylight?.[index + 1] ?? 1, plan.precipRates?.[index + 1] ?? 0));
     const snowSoon = !cond.snow && laterConditions.some((condition) => condition.snow);
-    const rainSoon = !cond.wet && !snowSoon && plan.maxPrecip >= 45;
+    const heavyRainSoon = !cond.wet && !snowSoon && (
+      laterConditions.some((condition) => condition.wetLevel >= 3) ||
+      rainIntensityFromRate(plan.peakRainRate) >= 3
+    );
+    const rainSoon = !cond.wet && !snowSoon && !heavyRainSoon && (
+      laterConditions.some((condition) => condition.wet) || plan.maxPrecip >= 45
+    );
 
     const whyLines = [];
     if (personalShift !== 0) {
@@ -598,7 +982,7 @@ export default function Layer() {
     } else if (isDay && cond.clear && base >= 72) {
       whyLines.push("Direct sun can add warmth, especially during a longer walk.");
     } else if (duration >= 60) {
-      whyLines.push(`The recommendation covers about ${duration === 60 ? "an hour" : `${duration / 60} hours`} outside.`);
+      whyLines.push(`The recommendation covers your time outside (${durationLabel(duration).toLowerCase()}).`);
     }
 
     return {
@@ -606,14 +990,16 @@ export default function Layer() {
       band,
       cond,
       threats,
-      extras: extrasFor(threats, cond),
+      extras: extrasFor(threats, cond, plan.peakRainRate),
       personalShift,
       rangeText: `${plan.minApparent}°–${plan.maxApparent}°`,
       tempDelta,
       significantTempChange: Math.abs(tempDelta) >= 6,
       rainSoon,
+      heavyRainSoon,
       snowSoon,
       peakPrecip: plan.maxPrecip,
+      peakRainRate: plan.peakRainRate,
       whyLines: whyLines.slice(0, 3),
       cycling,
       isDay,
@@ -718,6 +1104,11 @@ export default function Layer() {
   const ConditionIcon = cond.Icon;
   const liveWeatherCode = wx?.current?.code ?? plan.depart.code ?? 3;
   const liveIsDay = Number(wx?.current?.isDay ?? plan.depart.isDay ?? 1) !== 0;
+  const liveCond = decodeWeather(
+    liveWeatherCode,
+    liveIsDay ? 1 : 0,
+    Number(wx?.current?.precipRate ?? 0),
+  );
   const scene = scenicByCode(liveWeatherCode);
   const todayText = humanDate(now);
   const timeText = formatTime(now);
@@ -726,10 +1117,12 @@ export default function Layer() {
   const learningProgress = Math.min(95, Math.round((ratingCount / (ratingCount + 4)) * 100));
   const learningLabel = ratingCount === 0 ? "Starting profile" : `${learningProgress}% learned`;
   const planningSummary = `${startOffset === 0 ? "Leaving now" : `Leaving ${formatTime(outingStart)}`} • ${DURATIONS.find((d) => d.minutes === duration)?.label || `${duration} min`} outside${cycling ? " • Cycling" : ""}`;
+  const weatherAgeMinutes = weatherUpdatedAt == null ? null : Math.max(0, Math.floor((now.getTime() - weatherUpdatedAt) / 60000));
+  const weatherAgeText = weatherAgeMinutes == null ? "" : weatherAgeMinutes < 1 ? "Updated now" : `Updated ${weatherAgeMinutes} min ago`;
 
   return (
     <div
-      className={`lyr weather-${scene.key}${liveIsDay ? "" : " night-mode"}`}
+      className={`lyr weather-${scene.key} rain-severity-${liveCond.wetLevel}${liveCond.thunder ? " thunder-active" : ""}${liveIsDay ? "" : " night-mode"}`}
       data-weather-scene={scene.key}
       style={{ "--accent": accent }}
     >
@@ -741,6 +1134,12 @@ export default function Layer() {
         aria-hidden="true"
       />
       <div className="backdrop" />
+      {liveCond.category === "rain" && (
+        <div
+          className={`rain-overlay ${liveCond.wetLevel >= 3 ? "rain-heavy" : liveCond.wetLevel === 2 ? "rain-mod" : "rain-light"}`}
+          aria-hidden="true"
+        />
+      )}
       <div className="app-shell">
         <header className="topbar">
           <div className="campus-id">
@@ -748,7 +1147,7 @@ export default function Layer() {
           </div>
           <div className="top-actions">
             {wxState === "offline" && <span className="pill">sample data</span>}
-            <button className="round-btn" onClick={() => loadWeather(true)} aria-label="Refresh weather"><RefreshCw size={18} strokeWidth={2.2} /></button>
+            <button className="round-btn" onClick={() => loadWeather(true)} aria-label="Refresh weather" title={weatherAgeText || "Refresh weather"}><RefreshCw size={18} strokeWidth={2.2} /></button>
             <button className="round-btn" aria-label="Profile"><UserRound size={18} strokeWidth={2.2} /></button>
           </div>
         </header>
@@ -773,33 +1172,33 @@ export default function Layer() {
               </div>
               {result.personalShift !== 0 && <span className="shift">{result.personalShift > 0 ? "+" : ""}{result.personalShift}° personal</span>}
             </div>
-            <div className="hero-foot">{planningSummary}</div>
+            <div className="hero-foot"><span>{planningSummary}</span>{weatherAgeText && <span className="weather-age">{weatherAgeText}</span>}</div>
           </section>
 
           <aside className="planner glass card compact-planner planner-card">
             <div className="planner-head">
-              <h2>Plan another outing</h2>
+              <h2>Heading out?</h2>
               <button className="link-btn" aria-expanded={planOpen} aria-controls="outing-planner-controls" onClick={() => setPlanOpen((v) => !v)}>
-                {planOpen ? "Hide" : "Show"} <ChevronDown size={15} className={planOpen ? "open" : ""} />
+                {planOpen ? "Hide" : "Plan a later time"} <ChevronDown size={15} className={planOpen ? "open" : ""} />
               </button>
+            </div>
+            <div className="plan-block">
+              <span className="mini-l">{startOffset === 0 ? "How long will you be out?" : `Leaving ${formatTime(outingStart)} — for how long?`}</span>
+              <div className="chips">
+                {DURATIONS.map((d) => (
+                  <button key={d.minutes} className={`chip ${duration === d.minutes ? "on" : ""}`} onClick={() => setDuration(d.minutes)}>{d.label}</button>
+                ))}
+              </div>
             </div>
             {planOpen && (
               <div id="outing-planner-controls" className="planner-body">
                 <div className="plan-block">
-                  <span className="mini-l">Leaving</span>
+                  <span className="mini-l">Leaving later?</span>
                   <div className="chips">
                     {START_OFFSETS.map((offset) => (
                       <button key={offset} className={`chip ${startOffset === offset ? "on" : ""}`} onClick={() => setStartOffset(offset)}>
                         {offset === 0 ? "Now" : formatTime(new Date(now.getTime() + offset * 60 * 60 * 1000))}
                       </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="plan-block">
-                  <span className="mini-l">Outside for</span>
-                  <div className="chips">
-                    {DURATIONS.map((d) => (
-                      <button key={d.minutes} className={`chip ${duration === d.minutes ? "on" : ""}`} onClick={() => setDuration(d.minutes)}>{d.label}</button>
                     ))}
                   </div>
                 </div>
@@ -859,7 +1258,7 @@ export default function Layer() {
                 })}
               </div>
             )}
-            {(result.significantTempChange || result.rainSoon || result.snowSoon || result.cycling) && (
+            {(result.significantTempChange || result.heavyRainSoon || result.rainSoon || result.snowSoon || result.cycling) && (
               <div className="warnbar" role="status" aria-live="polite">
                 {result.significantTempChange && (
                   <span>
@@ -868,6 +1267,7 @@ export default function Layer() {
                   </span>
                 )}
                 {result.snowSoon && <span><Snowflake size={14} strokeWidth={2.4} /> Snow may begin before you return.</span>}
+                {result.heavyRainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Heavy rain may develop before you return.</span>}
                 {result.rainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Rain risk rises to about {result.peakPrecip}% before you return.</span>}
                 {result.cycling && <span><Bike size={14} strokeWidth={2.4} /> Cycling adds stronger wind exposure.</span>}
               </div>
@@ -878,7 +1278,7 @@ export default function Layer() {
             <div className="card-head inline-head">
               <h2 className="card-h">What’s the plan?</h2>
               <button className="plan-link" aria-expanded={planOpen} aria-controls="outing-planner-controls" onClick={() => setPlanOpen((v) => !v)}>
-                More planning options <ChevronDown size={14} className={planOpen ? "open" : ""} />
+                Plan a later time <ChevronDown size={14} className={planOpen ? "open" : ""} />
               </button>
             </div>
             <div className="acts">
@@ -959,8 +1359,39 @@ export default function Layer() {
 
             <div className="personalization-summary">
               <span>{ratingCount === 0 ? "Based on your setup answers" : `${ratingCount} rating${ratingCount === 1 ? "" : "s"}`}</span>
-              <span>Saved on this device</span>
+              <span className={`sync-status sync-${cloudState}`}>
+                Saved on this device
+                {cloudState === "active" && " · Cloud backup active"}
+                {cloudState === "connecting" && " · Connecting…"}
+                {cloudState === "unavailable" && " · Cloud backup unavailable"}
+                {cloudState === "device-only" && " only"}
+                {cloudState === "local" && " only · Cloud not configured"}
+              </span>
             </div>
+
+            {cloudState !== "local" && (
+              <div className="cloud-controls">
+                <button
+                  type="button"
+                  className="cloud-control-btn"
+                  disabled={cloudActionBusy || cloudState === "connecting"}
+                  onClick={handleCloudAction}
+                >
+                  {cloudActionBusy || cloudState === "connecting"
+                    ? "Connecting…"
+                    : cloudState === "active"
+                      ? "Use device only"
+                      : cloudState === "unavailable"
+                        ? "Retry cloud backup"
+                        : "Enable cloud backup"}
+                </button>
+                <span>
+                  {cloudState === "active"
+                    ? "Turning this off stops future uploads; local personalization keeps working."
+                    : "Cloud backup is optional and uses an anonymous identifier."}
+                </span>
+              </div>
+            )}
 
             {metric ? (
               <div className="metric">
@@ -1001,6 +1432,8 @@ export default function Layer() {
               </div>
             )}
           </section>
+
+          {ENABLE_ACCOUNT_UPGRADE && <AccountUpgrade ratingCount={ratingCount} />}
         </main>
       </div>
     </div>
@@ -1039,12 +1472,39 @@ const css = `
 .weather-clear .scene-image { background-position: center 61%; filter: saturate(.98) contrast(1.02); }
 .weather-cloudy .scene-image { background-position: center 59%; filter: saturate(.82) contrast(1.04); }
 .weather-rain .scene-image { background-position: center 61%; filter: saturate(.84) contrast(1.06) brightness(.92); }
+.rain-severity-2.weather-rain .scene-image { filter: saturate(.72) contrast(1.09) brightness(.82); }
+.rain-severity-3.weather-rain .scene-image { filter: saturate(.62) contrast(1.12) brightness(.7); }
 .weather-snow .scene-image { background-position: center 57%; filter: saturate(.78) brightness(1.04) contrast(1.02); }
 .backdrop {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
+}
+/* Animated rain — a real sense of precipitation, scaled to intensity. Sits
+   above the darkening backdrop but below all content, and never intercepts taps. */
+.rain-overlay {
+  position: fixed;
+  inset: -20% 0 0 0;
+  z-index: 0;
+  pointer-events: none;
+  background-repeat: repeat;
+  background-image:
+    linear-gradient(102deg, transparent 0 46%, rgba(210,225,240,.55) 46% 48%, transparent 48% 100%),
+    linear-gradient(102deg, transparent 0 72%, rgba(210,225,240,.40) 72% 73.5%, transparent 73.5% 100%);
+  background-size: 22px 22px, 34px 30px;
+  animation: rainfall .5s linear infinite;
+  opacity: .5;
+}
+.rain-light { opacity: .28; animation-duration: .7s; }
+.rain-mod   { opacity: .5;  animation-duration: .52s; }
+.rain-heavy { opacity: .72; animation-duration: .34s; background-size: 18px 20px, 26px 24px; }
+.rain-severity-3 .backdrop { background: linear-gradient(180deg, rgba(2,9,19,.42) 0%, rgba(2,9,19,.52) 32%, rgba(2,9,19,.68) 70%, rgba(1,7,16,.82) 100%); }
+@keyframes rainfall {
+  to { background-position: -12px 22px, 8px 30px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rain-overlay { animation: none; opacity: .18; }
 }
 .weather-clear .backdrop {
   background: linear-gradient(180deg, rgba(7,22,40,.25) 0%, rgba(7,22,40,.36) 30%, rgba(7,22,40,.58) 68%, rgba(7,22,40,.72) 100%);
@@ -1137,7 +1597,8 @@ const css = `
   margin-left: 10px; margin-bottom: 14px; font-family:'DM Mono',monospace; font-size: 12px; color: #FFE5A2;
   padding: 12px 16px; border-radius: 16px; background: rgba(240, 176, 54, .28); border: 1px solid rgba(255, 213, 124, .22);
 }
-.hero-foot { margin-top: 18px; font-size: 15px; color: rgba(255,255,255,.88); }
+.hero-foot { margin-top: 18px; font-size: 15px; color: rgba(255,255,255,.88); display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
+.weather-age { font-size: 12px; color: rgba(255,255,255,.7); font-family:'DM Mono',monospace; }
 .glass {
   background: rgba(255,255,255,.86); color: var(--ink); border: 1px solid rgba(255,255,255,.34);
   box-shadow: 0 24px 60px rgba(8,18,32,.16); backdrop-filter: blur(20px);
@@ -1342,8 +1803,36 @@ const css = `
 .ob-opt.on { box-shadow: inset 0 0 0 2px rgba(234,177,73,.8); background:#FBF5E8; }
 .ob-opt-l { display:block; font-weight:700; }
 .ob-opt-n { color:#6A7990; font-size: 13px; }
+.ob-privacy { margin: 22px 0 16px; padding: 14px 16px; border-radius: 16px; background:#F1F5FA; color:#54627A; font-size: 13.5px; line-height: 1.5; border: 1px solid #E4EBF3; }
+.ob-actions { display:flex; flex-wrap:wrap; gap: 10px; }
 .ob-go { border:none; cursor:pointer; background: var(--ink); color:white; border-radius: 18px; padding: 16px 18px; font-weight:700; display:inline-flex; align-items:center; gap: 8px; }
 .ob-go:disabled { opacity: .4; cursor: not-allowed; }
+.ob-secondary { border:1px solid #D3DDEA; background:white; color:#43506A; cursor:pointer; border-radius: 18px; padding: 16px 18px; font-weight:600; }
+.ob-secondary:disabled { opacity: .4; cursor: not-allowed; }
+.ob-secondary:hover:not(:disabled) { background:#F5F8FC; }
+.ob-note { margin: 12px 0 0; color:#7A879C; font-size: 12.5px; }
+.sync-status { display:inline-flex; align-items:center; }
+.sync-active { color:#2F855A !important; background:#E7F4EC !important; }
+.sync-unavailable { color:#9A6A2E !important; background:#F6EEE0 !important; }
+.sync-device-only { color:#5A6785 !important; }
+.cloud-controls { margin: 12px 0 4px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.cloud-control-btn { border:1px solid #D3DDEA; background:white; color:#43506A; cursor:pointer; border-radius:12px; padding:9px 12px; font-weight:700; font-size:12.5px; }
+.cloud-control-btn:hover:not(:disabled) { background:#F5F8FC; }
+.cloud-control-btn:disabled { opacity:.55; cursor:default; }
+.cloud-controls span { color:#718097; font-size:12.5px; line-height:1.4; }
+.upgrade-card { position:relative; border:1px solid #E4EBF3; }
+.upgrade-x { position:absolute; top:14px; right:14px; border:none; background:none; cursor:pointer; color:#9AA6B8; padding:4px; border-radius:8px; }
+.upgrade-x:hover { color:#43506A; background:#F1F5FA; }
+.upgrade-h { font-family:'Outfit', sans-serif; font-weight:700; font-size:16px; margin-bottom:6px; }
+.upgrade-p { color:#5C6A82; font-size:13.5px; line-height:1.5; margin:0 0 14px; max-width:46ch; }
+.upgrade-row { display:flex; gap:8px; }
+.upgrade-input { flex:1; min-width:0; border:1px solid #D3DDEA; border-radius:12px; padding:11px 13px; font-size:14px; font-family:'Instrument Sans', sans-serif; color:var(--ink); background:white; }
+.upgrade-input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.upgrade-go { border:none; cursor:pointer; background:var(--ink); color:white; border-radius:12px; padding:11px 18px; font-weight:700; font-size:14px; }
+.upgrade-go:disabled { opacity:.5; cursor:default; }
+.upgrade-err { margin-top:9px; color:#B4462F; font-size:12.5px; }
+.upgrade-sent { display:flex; align-items:center; gap:10px; color:#2F855A; font-size:13.5px; line-height:1.45; }
+.upgrade-sent svg { flex-shrink:0; }
 
 .loading-screen {
   min-height: 100vh;

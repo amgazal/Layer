@@ -72,3 +72,20 @@ This build fixes the comfort-threat level bars on narrow screens. The meter now 
 - Clothing visuals use neutral category badges instead of gender-coded emoji garments.
 - Clothing wording has been revised to use category-based, inclusive recommendations.
 - Comfort threat meters now show no filled bar for a `None` threat level.
+
+
+## Final reliability and presentation fixes
+
+- Automatic night mode uses Open-Meteo `is_day` and dims the scenic photography.
+- Direct-sun effects are never applied, displayed, or offered as a feedback cause at night.
+- Daytime-only sun-protection clothing is removed after sunset.
+- Clothing labels and garment markers are gender-neutral.
+- Cloud sync is explicit opt-in; a new visitor is not anonymously signed in before choosing.
+- Failed authentication can retry without a reload.
+- The feedback outbox removes only the batch that actually uploaded, preventing an overlapping event from being lost.
+- Account-upgrade UI is feature-flagged off until cross-device sign-in and model merging are complete.
+
+
+## Live rain accuracy
+
+Layer combines current, 15-minute, and hourly Open-Meteo data. The 15-minute feed drives current rain intensity and short outings, while hourly probability supports longer planning. Weather refreshes automatically every five minutes, or every two minutes during active rain.
