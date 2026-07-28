@@ -631,6 +631,7 @@ function AccountUpgrade({ ratingCount }) {
 
 export default function Layer() {
   const mounted = useRef(true);
+  const rainVideoRef = useRef(null);
   const [model, setModel] = useState(deepCopy(EMPTY_MODEL));
   const [ready, setReady] = useState(false);
   const [wx, setWx] = useState(null);
@@ -649,6 +650,8 @@ export default function Layer() {
   const [now, setNow] = useState(() => new Date());
   const [cloudState, setCloudState] = useState("connecting");
   const [cloudActionBusy, setCloudActionBusy] = useState(false);
+  const [weatherRefreshing, setWeatherRefreshing] = useState(false);
+  const [rainVideoFailed, setRainVideoFailed] = useState(false);
 
   useEffect(() => () => { mounted.current = false; }, []);
 
@@ -773,6 +776,44 @@ export default function Layer() {
     }
   }, [cloudActionBusy, cloudState, model]);
 
+  const resumeRainVideo = useCallback(({ restart = false, reload = false } = {}) => {
+    const video = rainVideoRef.current;
+    if (!video || document.visibilityState === "hidden") return false;
+
+    try {
+      // iOS and mobile browsers can pause muted background video whenever the
+      // page is backgrounded. Re-asserting these properties before play()
+      // makes the element eligible to resume without opening a media player.
+      video.muted = true;
+      video.defaultMuted = true;
+      video.playsInline = true;
+
+      if (restart && video.readyState >= 1) {
+        try { video.currentTime = 0; } catch {}
+      }
+      if (reload && (video.readyState < 2 || video.error)) video.load();
+
+      const playAttempt = video.play();
+      if (playAttempt?.catch) {
+        playAttempt.catch(() => {
+          // A suspended decoder sometimes needs one reload after the app
+          // returns from the background. Keep the static rain image visible
+          // while this retry happens.
+          if (!reload && document.visibilityState === "visible") {
+            try {
+              video.load();
+              const retry = video.play();
+              retry?.catch?.(() => {});
+            } catch {}
+          }
+        });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const loadWeather = useCallback(async (force = false) => {
     let cached = null;
     if (!force) {
@@ -896,16 +937,51 @@ export default function Layer() {
   useEffect(() => {
     const refreshWhenVisible = () => {
       if (document.visibilityState !== "visible") return;
+
+      // Browsers routinely suspend autoplay video in a background tab. Resume
+      // the rain footage immediately, even when the weather data is still fresh.
+      resumeRainVideo();
+
       const age = weatherUpdatedAt ? Date.now() - weatherUpdatedAt : Infinity;
-      if (age > 90 * 1000) loadWeather(true);
+      if (age > 90 * 1000) {
+        loadWeather(true).finally(() => {
+          window.requestAnimationFrame(() => resumeRainVideo());
+        });
+      }
     };
     document.addEventListener("visibilitychange", refreshWhenVisible);
     window.addEventListener("focus", refreshWhenVisible);
+    window.addEventListener("pageshow", refreshWhenVisible);
     return () => {
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       window.removeEventListener("focus", refreshWhenVisible);
+      window.removeEventListener("pageshow", refreshWhenVisible);
     };
-  }, [loadWeather, weatherUpdatedAt]);
+  }, [loadWeather, resumeRainVideo, weatherUpdatedAt]);
+
+  useEffect(() => {
+    const current = wx?.current;
+    if (!current || rainVideoFailed) return;
+    const currentCond = decodeWeather(current.code, current.isDay, current.precipRate);
+    if (currentCond.category !== "rain") return;
+    const frame = window.requestAnimationFrame(() => resumeRainVideo());
+    return () => window.cancelAnimationFrame(frame);
+  }, [rainVideoFailed, resumeRainVideo, wx?.current?.code, wx?.current?.isDay, wx?.current?.precipRate]);
+
+  const handleManualRefresh = useCallback(() => {
+    if (weatherRefreshing) return;
+    setWeatherRefreshing(true);
+    setRainVideoFailed(false);
+
+    // Call play() synchronously inside the tap/click event. That preserves the
+    // browser's user-activation permission and fixes paused video immediately.
+    resumeRainVideo({ restart: true, reload: true });
+
+    loadWeather(true).finally(() => {
+      if (mounted.current) setWeatherRefreshing(false);
+      window.requestAnimationFrame(() => resumeRainVideo());
+    });
+  }, [loadWeather, resumeRainVideo, weatherRefreshing]);
 
   const outingStart = useMemo(
     () => new Date(now.getTime() + startOffset * 60 * 60 * 1000),
@@ -1215,20 +1291,25 @@ export default function Layer() {
         style={{ backgroundImage: `url(${scene.src})` }}
         aria-hidden="true"
       />
-      {liveCond.category === "rain" && (
+      {liveCond.category === "rain" && !rainVideoFailed && (
         <video
+          ref={rainVideoRef}
+          key={`rain-video-${liveCond.wetLevel}`}
           className={`rain-video ${liveCond.wetLevel >= 3 ? "rain-video-heavy" : liveCond.wetLevel === 2 ? "rain-video-mod" : "rain-video-light"}`}
           autoPlay
           muted
           loop
           playsInline
-          preload="metadata"
+          preload="auto"
           poster={BACKGROUNDS.rain}
           controls={false}
           disablePictureInPicture
           tabIndex={-1}
           aria-hidden="true"
-          onError={(event) => { event.currentTarget.style.display = "none"; }}
+          onLoadedData={() => resumeRainVideo()}
+          onCanPlay={() => resumeRainVideo()}
+          onEnded={() => resumeRainVideo({ restart: true })}
+          onError={() => setRainVideoFailed(true)}
         >
           <source src={RAIN_VIDEO} type="video/mp4" />
         </video>
@@ -1241,7 +1322,15 @@ export default function Layer() {
           </div>
           <div className="top-actions">
             {wxState === "offline" && <span className="pill">sample data</span>}
-            <button className="round-btn" onClick={() => loadWeather(true)} aria-label="Refresh weather" title={weatherAgeText || "Refresh weather"}><RefreshCw size={18} strokeWidth={2.2} /></button>
+            <button
+              className={`round-btn${weatherRefreshing ? " is-refreshing" : ""}`}
+              onClick={handleManualRefresh}
+              aria-label={weatherRefreshing ? "Refreshing weather" : "Refresh weather and rain animation"}
+              aria-busy={weatherRefreshing}
+              title={weatherAgeText || "Refresh weather"}
+            >
+              <RefreshCw className="refresh-icon" size={18} strokeWidth={2.2} />
+            </button>
             <button className="round-btn" aria-label="Profile"><UserRound size={18} strokeWidth={2.2} /></button>
           </div>
         </header>
@@ -1673,6 +1762,8 @@ const css = `
   background: rgba(255,255,255,.16); color: white; backdrop-filter: blur(12px); cursor: pointer;
 }
 .round-btn:hover, .icon-btn:hover { background: rgba(255,255,255,.22); }
+.round-btn.is-refreshing .refresh-icon { animation: refreshSpin .8s linear infinite; }
+@keyframes refreshSpin { to { transform: rotate(360deg); } }
 .pill { font-family:'DM Mono',monospace; text-transform:uppercase; font-size:10px; letter-spacing:.12em; padding: 8px 12px; border-radius: 999px; background: rgba(255,247,227,.15); color: #FFF2D0; border: 1px solid rgba(255,244,215,.24); }
 .content-grid {
   display: grid;

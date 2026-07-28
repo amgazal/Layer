@@ -18,6 +18,8 @@ const checks = [
   ["weather request includes current and 15-minute precipitation", /current=[^`\n]*,precipitation,/.test(source) && /minutely_15=[^`\n]*precipitation/.test(source)],
   ["weather refreshes automatically", /ACTIVE_RAIN_REFRESH_MS/.test(source) && /setInterval\(\(\) => loadWeather\(true\)/.test(source)],
   ["rain video follows live conditions", /liveCond\.category === "rain"/.test(source) && /rain-loop\.mp4/.test(source) && /<video/.test(source)],
+  ["rain video resumes after app backgrounding", /visibilitychange/.test(source) && /pageshow/.test(source) && /resumeRainVideo/.test(source)],
+  ["manual refresh restarts rain footage", /handleManualRefresh/.test(source) && /restart: true, reload: true/.test(source)],
   ["synthetic rain streak overlay is removed", !/rain-overlay/.test(source) && !/@keyframes rainfall/.test(source)],
   ["onboarding heading is not duplicated", (source.match(/Cold is personal\./g) || []).length === 1],
   ["balanced outing durations are offered", /"20 min"/.test(source) && /"1 hr"/.test(source) && /"2 hrs"/.test(source) && /"4\+ hrs"/.test(source)],
