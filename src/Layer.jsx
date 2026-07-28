@@ -2185,6 +2185,8 @@ const css = `
 
 .round-btn.is-active { background: rgba(255,255,255,.28); box-shadow: inset 0 0 0 1px rgba(255,255,255,.28); }
 .profile-overlay {
+  --ink: #112033;
+  --panel-border: #D9E2EC;
   position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh;
   z-index: 2147483000; isolation: isolate; display: flex; align-items: center; justify-content: center;
   padding: 24px; background: rgba(5, 13, 24, .62);
@@ -2201,7 +2203,15 @@ const css = `
 .profile-panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
 .profile-kicker { display:block; margin-bottom:5px; font-family:'DM Mono', monospace; color:#76849A; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
 .profile-panel h2 { margin:0; font-family:'Outfit', sans-serif; font-size:30px; line-height:1.05; }
-.profile-close { flex-shrink:0; }
+.profile-close {
+  flex-shrink:0; width:44px; height:44px; padding:0; border-radius:50%;
+  display:grid; place-items:center; border:1px solid #112033;
+  background:#112033; color:#FFFFFF; box-shadow:0 6px 18px rgba(17,32,51,.18);
+  -webkit-appearance:none; appearance:none; touch-action:manipulation;
+}
+.profile-close:hover { background:#263A52; border-color:#263A52; }
+.profile-close:active { transform:scale(.96); }
+.profile-close:focus-visible { outline:3px solid color-mix(in srgb, var(--accent) 62%, white); outline-offset:3px; }
 .profile-intro { margin:16px 0 20px; color:#5E6D83; line-height:1.55; }
 .profile-stat-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:18px; }
 .profile-stat { padding:16px; border-radius:18px; background:#F1F4F8; display:flex; flex-direction:column; gap:4px; }
@@ -2215,12 +2225,24 @@ const css = `
 .profile-ok { color:#4AA56A; }
 .profile-privacy-note { display:flex; gap:10px; align-items:flex-start; margin:16px 0; padding:13px 14px; border-radius:16px; background:#F5F1E7; color:#5E6D83; font-size:12.5px; line-height:1.5; }
 .profile-privacy-note svg { color:var(--accent); flex-shrink:0; margin-top:1px; }
-.profile-actions { display:flex; gap:10px; flex-wrap:wrap; }
-.profile-primary, .profile-secondary { border-radius:14px; padding:12px 15px; font-weight:700; cursor:pointer; }
-.profile-primary { border:none; background:var(--ink); color:white; }
-.profile-secondary { border:1px solid #D4DDE8; background:white; color:#43516A; }
-.profile-primary:disabled { opacity:.55; cursor:default; }
-.profile-secondary:hover { background:#F5F8FC; }
+.profile-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+.profile-primary, .profile-secondary {
+  min-height:48px; border-radius:14px; padding:12px 16px; font-weight:800; cursor:pointer;
+  -webkit-appearance:none; appearance:none; touch-action:manipulation;
+  transition:transform .15s ease, background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.profile-primary {
+  border:1px solid #112033; background:#112033; color:#FFFFFF;
+  box-shadow:0 8px 22px rgba(17,32,51,.18);
+}
+.profile-primary:hover:not(:disabled) { background:#263A52; border-color:#263A52; }
+.profile-primary:active:not(:disabled), .profile-secondary:active { transform:translateY(1px); }
+.profile-secondary { border:1px solid #CBD6E2; background:#FFFFFF; color:#33445C; }
+.profile-primary:disabled { background:#AAB4C1; border-color:#AAB4C1; color:#FFFFFF; opacity:1; cursor:default; box-shadow:none; }
+.profile-primary:focus-visible, .profile-secondary:focus-visible {
+  outline:3px solid color-mix(in srgb, var(--accent) 62%, white); outline-offset:3px;
+}
+.profile-secondary:hover { background:#F5F8FC; border-color:#B8C6D6; }
 
 .loading-screen {
   min-height: 100vh;
@@ -2366,6 +2388,7 @@ label:has(input:focus-visible) {
   .profile-panel h2 { font-size:27px; }
   .profile-stat-grid { grid-template-columns:1fr 1fr; }
   .profile-actions { display:grid; grid-template-columns:1fr; }
-  .profile-primary, .profile-secondary { width:100%; }
+  .profile-primary, .profile-secondary { width:100%; min-height:52px; font-size:16px; }
+  .profile-close { width:46px; height:46px; }
 }
 `;
