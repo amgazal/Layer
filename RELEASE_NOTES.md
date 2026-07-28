@@ -47,3 +47,10 @@
 - Added wind gusts to the internal threat calculation without adding clutter to the main screen.
 - Shows a subtle "Updated now / Updated N min ago" status.
 - Removed a duplicated onboarding heading found during the merge review.
+
+## Rain wording consistency
+
+- Current-condition labels now describe only the weather at departure.
+- Outfit protection considers the full selected outing window.
+- Future heavy rain is labelled as developing later instead of being presented as current heavy rain.
+- Footer rain advice now matches the current rain intensity.

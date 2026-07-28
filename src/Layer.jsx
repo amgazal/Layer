@@ -301,12 +301,18 @@ function threatsFor({ effective, wind, gust, cond, precip, peakRainRate, isDay }
   return threats;
 }
 
-function extrasFor(threats, cond, peakRainRate = 0) {
+function extrasFor(threats, cond) {
   const out = [];
   const lv = (k) => threats.find((t) => t.key === k)?.level ?? 0;
-  if (cond.snow) out.push({ Icon: Snowflake, text: "Waterproof boots — the ground will soak through." });
-  else if (cond.wetLevel >= 3 || rainIntensityFromRate(peakRainRate) >= 3) out.push({ Icon: Umbrella, text: "Heavy rain — use a waterproof shell; an umbrella alone may not be enough." });
-  else if (lv("wet") >= 2) out.push({ Icon: Umbrella, text: "Take a shell or umbrella." });
+  if (cond.snow) {
+    out.push({ Icon: Snowflake, text: "Waterproof boots — the ground will soak through." });
+  } else if (cond.wetLevel >= 3) {
+    out.push({ Icon: Umbrella, text: "Heavy rain now — use a waterproof shell; an umbrella alone may not be enough." });
+  } else if (cond.wetLevel === 2) {
+    out.push({ Icon: Umbrella, text: "Rain now — use a waterproof shell or rain jacket." });
+  } else if (cond.wetLevel === 1) {
+    out.push({ Icon: Umbrella, text: "Light rain now — take a packable shell or umbrella." });
+  }
   if (lv("wind") >= 2) out.push({ Icon: Wind, text: "Make the outer layer wind resistant." });
   if (lv("sun") >= 2) out.push({ Icon: Sun, text: "Sunglasses and sunscreen if you’ll be out a while." });
   return out;
@@ -948,6 +954,23 @@ export default function Layer() {
     if (!plan) return null;
     const isDay = Number(plan.depart.isDay ?? 1) !== 0;
     const cond = decodeWeather(plan.depart.code, isDay ? 1 : 0, plan.depart.precipRate);
+    const laterConditions = plan.codes.slice(1).map((code, index) => decodeWeather(
+      code,
+      plan.daylight?.[index + 1] ?? 1,
+      plan.precipRates?.[index + 1] ?? 0,
+    ));
+    const laterWetLevel = Math.max(
+      0,
+      ...laterConditions.map((condition) => condition.wetLevel || 0),
+      rainIntensityFromRate(plan.peakRainRate),
+    );
+    const outingWetLevel = Math.max(cond.wetLevel || 0, laterWetLevel);
+    const snowSoon = !cond.snow && laterConditions.some((condition) => condition.snow);
+    const heavyRainSoon = !snowSoon && cond.wetLevel < 3 && outingWetLevel >= 3;
+    const rainSoon = !cond.wet && !snowSoon && !heavyRainSoon && (
+      outingWetLevel > 0 || plan.maxPrecip >= 45
+    );
+
     const base = plan.depart.apparent;
     let eff = base + pooledOffset(model, base);
     const windIntensity = clamp((plan.depart.wind - 6) / 14, 0, 1.4);
@@ -963,15 +986,29 @@ export default function Layer() {
       ? [...baseBand.layers]
       : baseBand.layers.filter((layer) => !/sun protection|sunglasses|shade/i.test(layer.label));
 
-    if (cond.wet && !cond.snow) {
-      // A rain layer belongs in the actual outfit, not only in a footer tip.
-      // Replace optional indoor-only layers on warm days to keep the list short.
+    if (outingWetLevel > 0 && !cond.snow && !snowSoon) {
+      // The outfit covers the whole selected outing, while the condition label
+      // describes what is happening at departure. This prevents a future peak
+      // from being presented as though it were already happening now.
       weatherLayers = weatherLayers.filter((layer) => !/thin layer for indoors/i.test(layer.label));
-      const rainLayer = cond.wetLevel >= 3
-        ? { label: "Waterproof rain jacket with hood", note: "Wear it now — an umbrella alone may not be enough." }
-        : cond.wetLevel >= 2
-          ? { label: "Waterproof shell or rain jacket", note: activity === "dashing" ? "Keep it ready." : "Wear it for the walk." }
-          : { label: "Packable rain shell", note: "Light rain protection." };
+      const rainLayer = outingWetLevel >= 3
+        ? {
+            label: "Waterproof rain jacket with hood",
+            note: cond.wetLevel >= 3
+              ? "Wear it now — an umbrella alone may not be enough."
+              : "Heavier rain may develop before you return.",
+          }
+        : outingWetLevel >= 2
+          ? {
+              label: "Waterproof shell or rain jacket",
+              note: cond.wetLevel >= 2
+                ? (activity === "dashing" ? "Keep it ready." : "Wear it for the walk.")
+                : "Rain may strengthen during the outing.",
+            }
+          : {
+              label: "Packable rain shell",
+              note: cond.wet ? "Light rain protection." : "Rain may begin before you return.",
+            };
       weatherLayers.push(rainLayer);
     }
 
@@ -981,7 +1018,11 @@ export default function Layer() {
         ? "Waterproof layer needed."
         : cond.wet
           ? "Rain protection needed."
-          : baseBand.sub,
+          : outingWetLevel >= 3
+            ? "Waterproof layer recommended."
+            : outingWetLevel > 0
+              ? "Rain protection recommended."
+              : baseBand.sub,
       layers: weatherLayers,
     };
     const threats = threatsFor({
@@ -995,16 +1036,6 @@ export default function Layer() {
     });
     const personalShift = Math.round(eff - base);
     const tempDelta = Math.round(plan.endApparent - plan.depart.apparent);
-    const laterConditions = plan.codes.slice(1).map((code, index) => decodeWeather(code, plan.daylight?.[index + 1] ?? 1, plan.precipRates?.[index + 1] ?? 0));
-    const snowSoon = !cond.snow && laterConditions.some((condition) => condition.snow);
-    const heavyRainSoon = !cond.wet && !snowSoon && (
-      laterConditions.some((condition) => condition.wetLevel >= 3) ||
-      rainIntensityFromRate(plan.peakRainRate) >= 3
-    );
-    const rainSoon = !cond.wet && !snowSoon && !heavyRainSoon && (
-      laterConditions.some((condition) => condition.wet) || plan.maxPrecip >= 45
-    );
-
     const whyLines = [];
     if (personalShift !== 0) {
       whyLines.push(`The official feels-like reading is ${base}°, and your profile adjusts it to ${effective}°.`);
@@ -1037,7 +1068,7 @@ export default function Layer() {
       band,
       cond,
       threats,
-      extras: extrasFor(threats, cond, plan.peakRainRate),
+      extras: extrasFor(threats, cond),
       personalShift,
       rangeText: `${plan.minApparent}°–${plan.maxApparent}°`,
       tempDelta,
@@ -1047,6 +1078,7 @@ export default function Layer() {
       snowSoon,
       peakPrecip: plan.maxPrecip,
       peakRainRate: plan.peakRainRate,
+      outingWetLevel,
       whyLines: whyLines.slice(0, 3),
       cycling,
       isDay,

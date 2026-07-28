@@ -24,6 +24,9 @@ const checks = [
   ["live rain uses the latest completed interval", /getLatestIndexAtOrBefore/.test(source) && /currentLiquidTotal/.test(source)],
   ["rain condition controls the scene", /key: liveCond\.category/.test(source)],
   ["active rain adds waterproof clothing", /Waterproof rain jacket with hood/.test(source) && /Packable rain shell/.test(source)],
+  ["current rain wording does not use the outing peak", /function extrasFor\(threats, cond\)/.test(source) && !/function extrasFor\(threats, cond, peakRainRate/.test(source)],
+  ["light rain can warn about heavier rain later", /cond\.wetLevel < 3 && outingWetLevel >= 3/.test(source) && /Heavy rain may develop before you return/.test(source)],
+  ["rain clothing covers the full outing window", /const outingWetLevel = Math\.max/.test(source) && /Heavier rain may develop before you return/.test(source)],
 ];
 
 let failed = 0;
