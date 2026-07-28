@@ -45,10 +45,9 @@ const LEVELS = ["None", "Low", "Mod", "High"];
 const START_OFFSETS = [0, 1, 3, 6];
 const DURATIONS = [
   { minutes: 20, label: "20 min" },
-  { minutes: 60, label: "1 hour" },
-  { minutes: 120, label: "2 hours" },
-  { minutes: 240, label: "Up to 4 hrs" },
-  { minutes: 360, label: "5+ hrs" },
+  { minutes: 60, label: "1 hr" },
+  { minutes: 120, label: "2 hrs" },
+  { minutes: 240, label: "4+ hrs" },
 ];
 const durationLabel = (minutes) =>
   DURATIONS.find((d) => d.minutes === minutes)?.label || `${minutes} min`;
@@ -192,6 +191,22 @@ function rateFrom15MinuteTotal(totalMm) {
   return Math.max(0, Number(totalMm) || 0) * 4;
 }
 
+function rateFromIntervalTotal(totalMm, intervalSeconds = 900) {
+  const seconds = Math.max(60, Number(intervalSeconds) || 900);
+  return Math.max(0, Number(totalMm) || 0) * (3600 / seconds);
+}
+
+function liquidPrecipitationTotal(source, index = null) {
+  const read = (key) => {
+    const value = index == null ? source?.[key] : source?.[key]?.[index];
+    return Math.max(0, Number(value) || 0);
+  };
+  // `precipitation` already includes rain and showers, but some models expose
+  // the liquid components more reliably. Taking the larger signal avoids
+  // double-counting while still catching a shower the aggregate missed.
+  return Math.max(read("precipitation"), read("rain") + read("showers"));
+}
+
 function wmoRainSeverity(code) {
   const value = Number(code);
   if ([57, 65, 67, 82, 95, 96, 99].includes(value)) return 3;
@@ -310,6 +325,16 @@ function getClosestIndex(times, targetMs) {
       minDiff = diff;
       best = i;
     }
+  }
+  return best;
+}
+
+function getLatestIndexAtOrBefore(times, targetMs) {
+  if (!times?.length) return -1;
+  let best = -1;
+  for (let i = 0; i < times.length; i++) {
+    if (asDate(times[i]).getTime() <= targetMs) best = i;
+    else break;
   }
   return best;
 }
@@ -777,23 +802,25 @@ export default function Layer() {
       const data = await res.json();
 
       const currentMs = typeof data.current?.time === "number" ? data.current.time * 1000 : Date.now();
-      const minuteIndex = data.minutely_15?.time?.length ? getClosestIndex(data.minutely_15.time, currentMs) : -1;
-      const minutelyPrecip = minuteIndex >= 0 ? Number(data.minutely_15.precipitation?.[minuteIndex] ?? 0) : null;
-      const rainRate = minutelyPrecip == null
-        ? rateFrom15MinuteTotal(data.current?.precipitation ?? 0)
-        : rateFrom15MinuteTotal(minutelyPrecip);
-      const currentCode = minuteIndex >= 0
-        ? Number(data.minutely_15.weather_code?.[minuteIndex] ?? data.current.weather_code)
-        : Number(data.current.weather_code);
-      const currentIsDay = minuteIndex >= 0
-        ? Number(data.minutely_15.is_day?.[minuteIndex] ?? data.current.is_day ?? 1)
-        : Number(data.current.is_day ?? 1);
-      const currentWind = minuteIndex >= 0
-        ? Number(data.minutely_15.wind_speed_10m?.[minuteIndex] ?? data.current.wind_speed_10m ?? 0)
-        : Number(data.current.wind_speed_10m ?? 0);
-      const currentGust = minuteIndex >= 0
-        ? Number(data.minutely_15.wind_gusts_10m?.[minuteIndex] ?? data.current.wind_gusts_10m ?? currentWind)
-        : Number(data.current.wind_gusts_10m ?? currentWind);
+      // 15-minute precipitation values describe the interval that just ended.
+      // Never use the closest *future* interval for a live condition: at 11:38,
+      // choosing 11:45 can incorrectly erase rain that is falling right now.
+      const minuteIndex = data.minutely_15?.time?.length
+        ? getLatestIndexAtOrBefore(data.minutely_15.time, currentMs)
+        : -1;
+
+      const currentLiquidTotal = liquidPrecipitationTotal(data.current);
+      const currentRainRate = rateFromIntervalTotal(currentLiquidTotal, data.current?.interval ?? 900);
+      const recentLiquidTotal = minuteIndex >= 0 ? liquidPrecipitationTotal(data.minutely_15, minuteIndex) : 0;
+      const recentRainRate = rateFrom15MinuteTotal(recentLiquidTotal);
+      const rainRate = Math.max(currentRainRate, recentRainRate);
+
+      const rawCurrentCode = Number(data.current?.weather_code ?? 3);
+      const recentCode = minuteIndex >= 0 ? Number(data.minutely_15.weather_code?.[minuteIndex] ?? rawCurrentCode) : rawCurrentCode;
+      const currentCode = wmoRainSeverity(recentCode) > wmoRainSeverity(rawCurrentCode) ? recentCode : rawCurrentCode;
+      const currentIsDay = Number(data.current?.is_day ?? (minuteIndex >= 0 ? data.minutely_15.is_day?.[minuteIndex] : 1) ?? 1);
+      const currentWind = Number(data.current?.wind_speed_10m ?? (minuteIndex >= 0 ? data.minutely_15.wind_speed_10m?.[minuteIndex] : 0) ?? 0);
+      const currentGust = Number(data.current?.wind_gusts_10m ?? (minuteIndex >= 0 ? data.minutely_15.wind_gusts_10m?.[minuteIndex] : currentWind) ?? currentWind);
 
       const payload = {
         current: {
@@ -802,7 +829,7 @@ export default function Layer() {
           code: currentCode,
           wind: Math.round(currentWind),
           gust: Math.round(currentGust),
-          precip: Math.round(data.current.precipitation_probability ?? 0),
+          precip: Math.round(probabilityAt(data.hourly, currentMs)),
           precipRate: rainRate,
           time: data.current.time,
           isDay: currentIsDay,
@@ -931,11 +958,30 @@ export default function Layer() {
 
     const effective = Math.round(eff);
     const baseBand = bandFor(effective);
+    let weatherLayers = isDay
+      ? [...baseBand.layers]
+      : baseBand.layers.filter((layer) => !/sun protection|sunglasses|shade/i.test(layer.label));
+
+    if (cond.wet && !cond.snow) {
+      // A rain layer belongs in the actual outfit, not only in a footer tip.
+      // Replace optional indoor-only layers on warm days to keep the list short.
+      weatherLayers = weatherLayers.filter((layer) => !/thin layer for indoors/i.test(layer.label));
+      const rainLayer = cond.wetLevel >= 3
+        ? { label: "Waterproof rain jacket with hood", note: "Wear it now — an umbrella alone may not be enough." }
+        : cond.wetLevel >= 2
+          ? { label: "Waterproof shell or rain jacket", note: activity === "dashing" ? "Keep it ready." : "Wear it for the walk." }
+          : { label: "Packable rain shell", note: "Light rain protection." };
+      weatherLayers.push(rainLayer);
+    }
+
     const band = {
       ...baseBand,
-      layers: isDay
-        ? baseBand.layers
-        : baseBand.layers.filter((layer) => !/sun protection|sunglasses|shade/i.test(layer.label)),
+      sub: cond.wetLevel >= 3
+        ? "Waterproof layer needed."
+        : cond.wet
+          ? "Rain protection needed."
+          : baseBand.sub,
+      layers: weatherLayers,
     };
     const threats = threatsFor({
       effective,
@@ -1109,7 +1155,10 @@ export default function Layer() {
     liveIsDay ? 1 : 0,
     Number(wx?.current?.precipRate ?? 0),
   );
-  const scene = scenicByCode(liveWeatherCode);
+  const scene = {
+    key: liveCond.category,
+    src: BACKGROUNDS[liveCond.category] ?? scenicByCode(liveWeatherCode).src,
+  };
   const todayText = humanDate(now);
   const timeText = formatTime(now);
   const accent = result.band.accent;
@@ -1184,7 +1233,7 @@ export default function Layer() {
             </div>
             <div className="plan-block">
               <span className="mini-l">{startOffset === 0 ? "How long will you be out?" : `Leaving ${formatTime(outingStart)} — for how long?`}</span>
-              <div className="chips">
+              <div className="chips duration-chips">
                 {DURATIONS.map((d) => (
                   <button key={d.minutes} className={`chip ${duration === d.minutes ? "on" : ""}`} onClick={() => setDuration(d.minutes)}>{d.label}</button>
                 ))}
@@ -1618,6 +1667,8 @@ const css = `
 .plan-block { display: grid; gap: 10px; }
 .mini-l, .conf { font-family:'DM Mono', monospace; letter-spacing:.12em; text-transform: uppercase; font-size: 11px; color: var(--muted-dark); }
 .chips, .follow-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.duration-chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.duration-chips .chip { width: 100%; padding-inline: 8px; white-space: nowrap; }
 .chip, .mini-chip {
   border: none; border-radius: 12px; padding: 10px 14px; cursor: pointer;
   background: #EEF1F7; color: #5D6D86; font-weight: 700;
@@ -1947,6 +1998,7 @@ label:has(input:focus-visible) {
   .wear-name, .th-l { font-size: 18px; }
   .wear-symbol { width: 48px; height: 40px; font-size: 8px; }
   .acts, .fb-row { flex-direction: column; }
+  .duration-chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .scale { gap: 10px; font-size: 10px; }
   .threat {
     grid-template-columns: 1fr;
