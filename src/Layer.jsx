@@ -5,7 +5,7 @@ import {
   Wind, Zap, Snowflake, Droplets, Check, Flame, MapPin, RefreshCw,
   Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight,
   Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon,
-  HardDrive, ShieldCheck
+  HardDrive
 } from "lucide-react";
 import {
   ensureAuth, pullModel, pushModel, pushProfile, logEvent,
@@ -69,7 +69,7 @@ const TOLERANCE = [
 const ACTIVITIES = {
   waiting: { label: "Standing", Icon: Timer, adj: -5, hint: "Stop, platform, queue" },
   walking: { label: "Walking", Icon: Footprints, adj: 2, hint: "10+ min on foot" },
-  dashing: { label: "Quick dash", Icon: Car, adj: 6, hint: "Door to car to door" },
+  dashing: { label: "Quick trip", Icon: Car, adj: 6, hint: "Door to car to door" },
 };
 
 const EMPTY_MODEL = {
@@ -1433,7 +1433,7 @@ export default function Layer() {
               <span className="mini-l">{startOffset === 0 ? "How long will you be out?" : `Leaving ${formatTime(outingStart)} — for how long?`}</span>
               <div className="chips duration-chips">
                 {DURATIONS.map((d) => (
-                  <button key={d.minutes} className={`chip ${duration === d.minutes ? "on" : ""}`} onClick={() => setDuration(d.minutes)}>{d.label}</button>
+                  <button type="button" key={d.minutes} aria-pressed={duration === d.minutes} className={`chip ${duration === d.minutes ? "on" : ""}`} onClick={() => setDuration(d.minutes)}>{d.label}</button>
                 ))}
               </div>
             </div>
@@ -1443,7 +1443,7 @@ export default function Layer() {
                   <span className="mini-l">Leaving later?</span>
                   <div className="chips">
                     {START_OFFSETS.map((offset) => (
-                      <button key={offset} className={`chip ${startOffset === offset ? "on" : ""}`} onClick={() => setStartOffset(offset)}>
+                      <button type="button" key={offset} aria-pressed={startOffset === offset} className={`chip ${startOffset === offset ? "on" : ""}`} onClick={() => setStartOffset(offset)}>
                         {offset === 0 ? "Now" : formatTime(new Date(now.getTime() + offset * 60 * 60 * 1000))}
                       </button>
                     ))}
@@ -1473,7 +1473,6 @@ export default function Layer() {
                     <span className="wear-name">{l.label}</span>
                     {l.note && <span className="wear-note">{l.note}</span>}
                   </span>
-                  <ChevronDown size={18} className="wear-arrow" />
                 </li>
               ))}
             </ul>
@@ -1522,17 +1521,17 @@ export default function Layer() {
           </section>
 
           <section className="card glass main-card activity-card">
-            <div className="card-head inline-head">
-              <h2 className="card-h">What’s the plan?</h2>
-              <button className="plan-link" aria-expanded={planOpen} aria-controls="outing-planner-controls" onClick={() => setPlanOpen((v) => !v)}>
-                Plan a later time <ChevronDown size={14} className={planOpen ? "open" : ""} />
-              </button>
+            <div className="card-head activity-head">
+              <div>
+                <h2 className="card-h">What’s the plan?</h2>
+                <p className="card-sub">Choose one to tailor the recommendation.</p>
+              </div>
             </div>
-            <div className="acts">
+            <div className="acts" role="group" aria-label="Outdoor activity">
               {Object.entries(ACTIVITIES).map(([key, a]) => {
                 const A = a.Icon;
                 return (
-                  <button key={key} className={`act ${activity === key ? "on" : ""}`} onClick={() => setActivity(key)}>
+                  <button type="button" key={key} aria-pressed={activity === key} className={`act ${activity === key ? "on" : ""}`} onClick={() => setActivity(key)}>
                     <A size={18} strokeWidth={2.2} />
                     <span className="act-l">{a.label}</span>
                     <span className="act-h">{a.hint}</span>
@@ -1627,14 +1626,14 @@ export default function Layer() {
                   {cloudActionBusy || cloudState === "connecting"
                     ? "Connecting…"
                     : cloudState === "active"
-                      ? "Use device only"
+                      ? "Turn off cloud sync"
                       : cloudState === "unavailable"
                         ? "Retry cloud sync"
                         : "Enable cloud sync"}
                 </button>
                 <span>
                   {cloudState === "active"
-                    ? "Turning this off stops future uploads; local personalization keeps working."
+                    ? "Stops future uploads; local personalization keeps working."
                     : "Cloud sync is optional and uses an anonymous identifier."}
                 </span>
               </div>
@@ -1703,49 +1702,37 @@ export default function Layer() {
             aria-labelledby="profile-panel-title"
           >
             <div className="profile-panel-head">
-              <div>
-                <span className="profile-kicker">Anonymous profile</span>
-                <h2 id="profile-panel-title">Your Layer profile</h2>
-              </div>
+              <h2 id="profile-panel-title">Your profile</h2>
               <button className="icon-btn profile-close" type="button" aria-label="Close profile" onClick={() => setProfileOpen(false)}>
                 <X size={18} strokeWidth={2.4} />
               </button>
             </div>
 
             <p className="profile-intro">
-              Layer personalizes recommendations from your setup and the feedback you choose to give. No name or email is attached to this profile.
+              Layer learns from your ratings. Your name and email are not collected.
             </p>
 
             <div className="profile-stat-grid">
-              <div className="profile-stat"><strong>{ratingCount}</strong><span>outings rated</span></div>
-              <div className="profile-stat"><strong>{learningLabel}</strong><span>personalization</span></div>
+              <div className="profile-stat"><strong>{ratingCount}</strong><span>rating{ratingCount === 1 ? "" : "s"}</span></div>
+              <div className="profile-stat"><strong>{ratingCount === 0 ? "New" : `${learningProgress}%`}</strong><span>profile progress</span></div>
             </div>
 
             <div className="profile-storage-list">
-              <div className="profile-storage-row">
+              <div className="profile-storage-row profile-storage-compact">
                 <HardDrive size={19} strokeWidth={2.1} />
-                <div><strong>Saved on this device</strong><span>Your recommendations work even without cloud sync.</span></div>
+                <div><strong>Saved on this device</strong></div>
                 <Check size={18} strokeWidth={2.4} className="profile-ok" />
               </div>
-              <div className="profile-storage-row">
+              <div className="profile-storage-row profile-storage-compact">
                 <Cloud size={19} strokeWidth={2.1} />
-                <div>
-                  <strong>
-                    {cloudState === "active" ? "Cloud sync active" : cloudState === "connecting" ? "Connecting cloud sync" : cloudState === "unavailable" ? "Cloud sync unavailable" : cloudState === "local" ? "Cloud sync not configured" : "Cloud sync off"}
-                  </strong>
-                  <span>
-                    {cloudState === "active"
-                      ? "Your anonymous model and new feedback are mirrored to Supabase."
-                      : "Your local profile continues working on this device."}
-                  </span>
-                </div>
+                <div><strong>{cloudState === "active" ? "Cloud sync active" : cloudState === "connecting" ? "Connecting cloud sync" : cloudState === "unavailable" ? "Cloud sync unavailable" : cloudState === "local" ? "Cloud sync unavailable" : "Cloud sync off"}</strong></div>
+                {cloudState === "active" && <Check size={18} strokeWidth={2.4} className="profile-ok" />}
               </div>
             </div>
 
-            <div className="profile-privacy-note">
-              <ShieldCheck size={18} strokeWidth={2.2} />
-              <span><strong>What cloud sync means:</strong> it mirrors this anonymous browser profile. It does not yet provide cross-device recovery or a normal sign-in account.</span>
-            </div>
+            {cloudState !== "local" && (
+              <p className="profile-note">Cloud sync is anonymous and cannot restore this profile on another device yet.</p>
+            )}
 
             <div className="profile-actions">
               {cloudState !== "local" && (
@@ -1758,14 +1745,14 @@ export default function Layer() {
                   {cloudActionBusy || cloudState === "connecting"
                     ? "Connecting…"
                     : cloudState === "active"
-                      ? "Use device only"
+                      ? "Turn off cloud sync"
                       : cloudState === "unavailable"
                         ? "Retry cloud sync"
                         : "Enable cloud sync"}
                 </button>
               )}
               <button type="button" className="profile-secondary" onClick={openPersonalization}>
-                View personalization
+                Personalization details
               </button>
             </div>
           </section>
@@ -1998,8 +1985,6 @@ const css = `
 .main-card { grid-column: 1 / span 1; }
 .card-h { margin: 0; font-family:'Outfit', sans-serif; font-size: 18px; }
 .card-head { display:flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
-.inline-head { align-items: start; }
-.plan-link { background: #F1F4FA; border-radius: 999px; padding: 10px 14px; }
 .wear-card { padding-top: 18px; }
 .card-title-row { font-size: 16px; margin-bottom: 8px; }
 .wear-list { list-style: none; margin: 0; padding: 0; }
@@ -2016,7 +2001,6 @@ const css = `
 .wear-txt { display:flex; flex-direction: column; gap: 4px; flex: 1; }
 .wear-name { font-size: 22px; font-weight: 600; }
 .wear-note { font-size: 15px; color: var(--muted-dark); }
-.wear-arrow { color: #8A97AA; transform: rotate(-90deg); }
 .why-toggle {
   width: 100%;
   min-height: 46px;
@@ -2056,6 +2040,8 @@ const css = `
 .warnbar { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 12px; color: #5f6f85; font-size: 14px; }
 .warnbar span { display: inline-flex; align-items: center; gap: 8px; background:#F7F8FB; padding: 10px 12px; border-radius: 12px; }
 .warnbar svg { color: var(--accent); flex-shrink: 0; }
+.card-sub { margin:4px 0 0; color:#718097; font-size:12.5px; line-height:1.35; }
+.activity-head { align-items:flex-start; }
 .acts { display:flex; gap: 14px; }
 .act {
   flex: 1; text-align: left; display:flex; flex-direction: column; gap: 6px; padding: 20px; border-radius: 24px; border: none;
@@ -2201,7 +2187,6 @@ const css = `
   overscroll-behavior: contain; -webkit-overflow-scrolling: touch; outline: none;
 }
 .profile-panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
-.profile-kicker { display:block; margin-bottom:5px; font-family:'DM Mono', monospace; color:#76849A; font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
 .profile-panel h2 { margin:0; font-family:'Outfit', sans-serif; font-size:30px; line-height:1.05; }
 .profile-close {
   flex-shrink:0; width:44px; height:44px; padding:0; border-radius:50%;
@@ -2223,8 +2208,8 @@ const css = `
 .profile-storage-row strong { display:block; margin-bottom:3px; font-size:14px; }
 .profile-storage-row span { display:block; color:#718097; font-size:12.5px; line-height:1.45; }
 .profile-ok { color:#4AA56A; }
-.profile-privacy-note { display:flex; gap:10px; align-items:flex-start; margin:16px 0; padding:13px 14px; border-radius:16px; background:#F5F1E7; color:#5E6D83; font-size:12.5px; line-height:1.5; }
-.profile-privacy-note svg { color:var(--accent); flex-shrink:0; margin-top:1px; }
+.profile-storage-compact { align-items:center; }
+.profile-note { margin:12px 2px 0; color:#718097; font-size:12.5px; line-height:1.45; }
 .profile-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
 .profile-primary, .profile-secondary {
   min-height:48px; border-radius:14px; padding:12px 16px; font-weight:800; cursor:pointer;
