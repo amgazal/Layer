@@ -3,6 +3,7 @@ import fs from "node:fs";
 const source = fs.readFileSync(new URL("../src/Layer.jsx", import.meta.url), "utf8");
 const sync = fs.readFileSync(new URL("../src/lib/sync.js", import.meta.url), "utf8");
 const weather = fs.readFileSync(new URL("../src/lib/weather.js", import.meta.url), "utf8");
+const schema = fs.readFileSync(new URL("../supabase/schema.sql", import.meta.url), "utf8");
 
 const checks = [
   ["weather API requests current is_day", /current=[^`\n]*is_day/.test(source)],
@@ -41,6 +42,12 @@ const checks = [
   ["light rain can warn about heavier rain later", /cond\.wetLevel < 3 && outingWetLevel >= 3/.test(source) && /Heavy rain may develop before you return/.test(source)],
   ["rain clothing covers the full outing window", /const outingWetLevel = Math\.max/.test(source) && /Heavier rain may develop before you return/.test(source)],
   ["departure time is absolute, not a live offset", /const \[departAt/.test(source) && /laterDepartureOptions/.test(source) && !/startOffset/.test(source)],
+  ["temperature display uses actual air temperature now", /departAt == null \? "Temperature" : "Forecast"/.test(source) && /plan\.depart\.actual/.test(source)],
+  ["standard apparent temperature is not duplicated in the hero", !/<span className="read-k">Feels like<\/span>/.test(source)],
+  ["profile exposes a confirmed personalization reset", /Reset personalization/.test(source) && /Start fresh\?/.test(source) && /handleResetPersonalization/.test(source)],
+  ["reset clears synced model, profile, events and pending feedback", /resetPersonalizationCloud/.test(sync) && /from\("events"\)\.delete/.test(sync) && /from\("profiles"\)\.delete/.test(sync) && /observations: 0/.test(sync) && /writeOutbox\(\[\]\)/.test(sync)],
+  ["pending reset blocks stale cloud restoration", /hasPendingReset/.test(source) && /if \(hasPendingReset\(\)\) return/.test(source)],
+  ["event rows can be deleted by their owner", /create policy "own events delete"/.test(schema)],
 ];
 
 let failed = 0;

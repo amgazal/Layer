@@ -170,6 +170,10 @@ drop policy if exists "own events select" on public.events;
 create policy "own events select" on public.events
   for select using (auth.uid() = user_id);
 
+drop policy if exists "own events delete" on public.events;
+create policy "own events delete" on public.events
+  for delete using (auth.uid() = user_id);
+
 -- ============================================================================
 -- STUDY QUERY — run this in the SQL Editor (it runs as service role there and
 -- bypasses RLS, so it sees every participant). This is your résumé number.

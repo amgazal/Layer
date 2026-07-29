@@ -13,12 +13,16 @@ import { supabase, cloudEnabled } from "./supabase";
 
 const PREF_KEY = "layer:cloud-pref"; // "on" | "off" | missing
 const OUTBOX_KEY = "layer:outbox";
+const RESET_PENDING_KEY = "layer:reset-pending";
 
 function lsGet(key) {
   try { return window.localStorage?.getItem(key) ?? null; } catch { return null; }
 }
 function lsSet(key, value) {
   try { window.localStorage?.setItem(key, value); } catch {}
+}
+function lsRemove(key) {
+  try { window.localStorage?.removeItem(key); } catch {}
 }
 const uuid = () =>
   (globalThis.crypto?.randomUUID?.() ??
@@ -269,6 +273,69 @@ export async function flushOutbox() {
     if (uploaded && cloudAllowed() && readOutbox().length > 0) {
       setTimeout(() => flushOutbox(), 0);
     }
+  }
+}
+
+
+export function hasPendingReset() {
+  return lsGet(RESET_PENDING_KEY) === "1";
+}
+
+/**
+ * Clears every piece of personalised data that Layer owns for the current
+ * anonymous profile. Local data is cleared immediately; cloud cleanup is
+ * attempted when a Supabase session exists and is retried the next time cloud
+ * sync is enabled if the network is unavailable.
+ */
+export async function resetPersonalizationCloud(emptyModel) {
+  clearTimeout(pushTimer);
+  pushTimer = null;
+  pendingModel = null;
+  writeOutbox([]);
+  lsSet(RESET_PENDING_KEY, "1");
+
+  if (!cloudEnabled) {
+    lsRemove(RESET_PENDING_KEY);
+    return { ok: true, cloud: "not-configured" };
+  }
+
+  try {
+    let user = null;
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) throw sessionError;
+    user = session?.user ?? null;
+
+    // When cloud sync is currently enabled, create/recover the anonymous session
+    // so the reset can also clear its server-side data. If sync is off and no
+    // session exists, there is no reachable cloud profile to delete yet; the
+    // pending marker prevents an older cloud model from being restored later.
+    if (!user && cloudAllowed()) user = await ensureAuth();
+    if (!user) return { ok: true, cloud: "pending" };
+
+    const results = await Promise.all([
+      supabase.from("events").delete().eq("user_id", user.id),
+      supabase.from("profiles").delete().eq("id", user.id),
+      supabase.from("model_state").upsert(
+        {
+          user_id: user.id,
+          model: emptyModel,
+          observations: 0,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" },
+      ),
+    ]);
+
+    const failed = results.find((result) => result.error);
+    if (failed?.error) throw failed.error;
+
+    lsRemove(RESET_PENDING_KEY);
+    markNet(cloudAllowed() ? "active" : "device-only");
+    return { ok: true, cloud: "cleared" };
+  } catch (error) {
+    console.warn("[sync] personalization reset failed:", error?.message || error);
+    if (cloudAllowed()) markNet("unavailable");
+    return { ok: false, cloud: "pending", error: error?.message || "Cloud cleanup will retry later." };
   }
 }
 

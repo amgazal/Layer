@@ -5,7 +5,7 @@ import {
   Wind, Zap, Snowflake, Droplets, Check, Flame, MapPin, RefreshCw,
   Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight,
   Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon,
-  HardDrive
+  HardDrive, RotateCcw
 } from "lucide-react";
 import {
   CLAMP, clamp, deepCopy, EMPTY_MODEL, normalizeModel,
@@ -19,7 +19,7 @@ import {
 import {
   ensureAuth, pullModel, pushModel, pushProfile, logEvent,
   flushOutbox, setCloudPref, subscribeCloud, retryCloud,
-  subscribeAuth, upgradeWithEmail,
+  subscribeAuth, upgradeWithEmail, hasPendingReset, resetPersonalizationCloud,
 } from "./lib/sync";
 
 const CAMPUS = {
@@ -549,6 +549,8 @@ export default function Layer() {
   const [rainVideoFailed, setRainVideoFailed] = useState(false);
   const [rainVideoVersion, setRainVideoVersion] = useState(0);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const profilePanelRef = useRef(null);
 
   useEffect(() => () => { mounted.current = false; }, []);
@@ -573,7 +575,10 @@ export default function Layer() {
     const previousBodyOverflow = document.body.style.overflow;
     const previousHtmlOverflow = document.documentElement.style.overflow;
     const closeOnEscape = (event) => {
-      if (event.key === "Escape") setProfileOpen(false);
+      if (event.key === "Escape") {
+        setResetConfirmOpen(false);
+        setProfileOpen(false);
+      }
     };
 
     // Rendered through a body portal below. Lock both scrolling elements because
@@ -615,7 +620,14 @@ export default function Layer() {
       }
       if (mounted.current) setReady(true);
 
-      // 2) In the background, mint the anonymous session and reconcile with cloud.
+      // 2) Finish any previously interrupted reset before cloud reconciliation.
+      // This prevents an older cloud model from restoring data the user cleared.
+      if (hasPendingReset()) {
+        await resetPersonalizationCloud(deepCopy(EMPTY_MODEL));
+        if (hasPendingReset()) return;
+      }
+
+      // 3) In the background, mint the anonymous session and reconcile with cloud.
       ensureAuth();
       flushOutbox();  // resend any feedback events queued while offline last time
       try {
@@ -683,6 +695,11 @@ export default function Layer() {
     try {
       const connected = await retryCloud();
       if (!connected) return;
+
+      if (hasPendingReset()) {
+        await resetPersonalizationCloud(deepCopy(EMPTY_MODEL));
+        if (hasPendingReset()) return;
+      }
 
       const cloud = await pullModel();
       if (cloud?.model) {
@@ -956,6 +973,7 @@ export default function Layer() {
   }, [loadWeather, resumeRainVideo, weatherRefreshing]);
 
   const openPersonalization = useCallback(() => {
+    setResetConfirmOpen(false);
     setProfileOpen(false);
     window.requestAnimationFrame(() => {
       document.getElementById("personalization-section")?.scrollIntoView({
@@ -964,6 +982,37 @@ export default function Layer() {
       });
     });
   }, []);
+
+  const handleResetPersonalization = useCallback(async () => {
+    if (resetBusy) return;
+    setResetBusy(true);
+
+    const empty = deepCopy(EMPTY_MODEL);
+    // The sync layer clears queued feedback immediately and either clears the
+    // current cloud profile or leaves a retry marker that blocks old cloud data
+    // from being restored later.
+    await Promise.race([
+      resetPersonalizationCloud(empty),
+      new Promise((resolve) => window.setTimeout(() => resolve({ ok: false, cloud: "pending" }), 4500)),
+    ]);
+    await storageSet(MODEL_KEY, JSON.stringify(empty));
+
+    if (!mounted.current) return;
+    setModel(empty);
+    setActivity("walking");
+    setPlanOpen(false);
+    setDepartAt(null);
+    setDuration(60);
+    setCycling(false);
+    setAskBlame(null);
+    setToast(null);
+    setFollowed("yes");
+    setShowModel(false);
+    setShowWhy(false);
+    setResetConfirmOpen(false);
+    setProfileOpen(false);
+    setResetBusy(false);
+  }, [resetBusy]);
 
   const outingStart = useMemo(
     () => (departAt != null ? new Date(departAt) : now),
@@ -1330,7 +1379,7 @@ export default function Layer() {
               aria-label="Open your Layer profile"
               aria-expanded={profileOpen}
               aria-controls="layer-profile-panel"
-              onClick={() => setProfileOpen(true)}
+              onClick={() => { setResetConfirmOpen(false); setProfileOpen(true); }}
             ><UserRound size={18} strokeWidth={2.2} /></button>
           </div>
         </header>
@@ -1345,8 +1394,8 @@ export default function Layer() {
             <p className="sub">{result.band.sub}</p>
             <div className="reads">
               <div className="read">
-                <span className="read-k">Feels like</span>
-                <span className="read-v">{plan.depart.apparent}°</span>
+                <span className="read-k">{departAt == null ? "Temperature" : "Forecast"}</span>
+                <span className="read-v">{plan.depart.actual}°</span>
               </div>
               <ArrowRight size={18} strokeWidth={2.4} className="read-arrow" />
               <div className="read read-you">
@@ -1629,7 +1678,7 @@ export default function Layer() {
           className="profile-overlay"
           role="presentation"
           onPointerDown={(event) => {
-            if (event.target === event.currentTarget) setProfileOpen(false);
+            if (event.target === event.currentTarget) { setResetConfirmOpen(false); setProfileOpen(false); }
           }}
           style={{ "--accent": accent }}
         >
@@ -1644,7 +1693,7 @@ export default function Layer() {
           >
             <div className="profile-panel-head">
               <h2 id="profile-panel-title">Your profile</h2>
-              <button className="icon-btn profile-close" type="button" aria-label="Close profile" onClick={() => setProfileOpen(false)}>
+              <button className="icon-btn profile-close" type="button" aria-label="Close profile" onClick={() => { setResetConfirmOpen(false); setProfileOpen(false); }}>
                 <X size={18} strokeWidth={2.4} />
               </button>
             </div>
@@ -1675,27 +1724,54 @@ export default function Layer() {
               <p className="profile-note">Cloud sync is anonymous and cannot restore this profile on another device yet.</p>
             )}
 
-            <div className="profile-actions">
-              {cloudState !== "local" && (
+            {!resetConfirmOpen ? (
+              <>
+                <div className="profile-actions">
+                  {cloudState !== "local" && (
+                    <button
+                      type="button"
+                      className="profile-primary"
+                      disabled={cloudActionBusy || cloudState === "connecting"}
+                      onClick={handleCloudAction}
+                    >
+                      {cloudActionBusy || cloudState === "connecting"
+                        ? "Connecting…"
+                        : cloudState === "active"
+                          ? "Turn off cloud sync"
+                          : cloudState === "unavailable"
+                            ? "Retry cloud sync"
+                            : "Enable cloud sync"}
+                    </button>
+                  )}
+                  <button type="button" className="profile-secondary" onClick={openPersonalization}>
+                    Personalization details
+                  </button>
+                </div>
                 <button
                   type="button"
-                  className="profile-primary"
-                  disabled={cloudActionBusy || cloudState === "connecting"}
-                  onClick={handleCloudAction}
+                  className="profile-reset-link"
+                  onClick={() => setResetConfirmOpen(true)}
                 >
-                  {cloudActionBusy || cloudState === "connecting"
-                    ? "Connecting…"
-                    : cloudState === "active"
-                      ? "Turn off cloud sync"
-                      : cloudState === "unavailable"
-                        ? "Retry cloud sync"
-                        : "Enable cloud sync"}
+                  <RotateCcw size={15} strokeWidth={2.2} /> Reset personalization
                 </button>
-              )}
-              <button type="button" className="profile-secondary" onClick={openPersonalization}>
-                Personalization details
-              </button>
-            </div>
+              </>
+            ) : (
+              <div className="reset-confirm" role="alertdialog" aria-labelledby="reset-title" aria-describedby="reset-copy">
+                <div className="reset-title-row">
+                  <AlertTriangle size={19} strokeWidth={2.2} />
+                  <h3 id="reset-title">Start fresh?</h3>
+                </div>
+                <p id="reset-copy">
+                  Layer will erase your setup, ratings, and learned adjustments. You’ll answer the two setup questions again.
+                </p>
+                <div className="reset-actions">
+                  <button type="button" className="profile-secondary" disabled={resetBusy} onClick={() => setResetConfirmOpen(false)}>Cancel</button>
+                  <button type="button" className="profile-danger" disabled={resetBusy} onClick={handleResetPersonalization}>
+                    {resetBusy ? "Resetting…" : "Reset personalization"}
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
         </div>
       , document.body)}
@@ -2175,6 +2251,24 @@ const css = `
   outline:3px solid color-mix(in srgb, var(--accent) 62%, white); outline-offset:3px;
 }
 .profile-secondary:hover { background:#F5F8FC; border-color:#B8C6D6; }
+.profile-reset-link {
+  margin:14px auto 0; border:0; background:transparent; color:#8A4B4B;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  min-height:40px; padding:8px 12px; font:600 13px 'Instrument Sans', sans-serif; cursor:pointer;
+}
+.profile-reset-link:hover { color:#A53E3E; text-decoration:underline; text-underline-offset:3px; }
+.profile-reset-link:focus-visible, .profile-danger:focus-visible { outline:3px solid rgba(188,73,73,.28); outline-offset:3px; }
+.reset-confirm { margin-top:18px; padding:17px; border:1px solid #E9C9C9; border-radius:18px; background:#FFF7F7; }
+.reset-title-row { display:flex; align-items:center; gap:9px; color:#9A3E3E; }
+.reset-title-row h3 { margin:0; font-family:'Outfit',sans-serif; font-size:18px; color:#5B2C2C; }
+.reset-confirm p { margin:9px 0 15px; color:#725B63; font-size:13px; line-height:1.5; }
+.reset-actions { display:grid; grid-template-columns:1fr 1.2fr; gap:9px; }
+.profile-danger {
+  min-height:46px; padding:0 16px; border-radius:14px; border:1px solid #B84A4A;
+  background:#B84A4A; color:white; font:700 14px 'Instrument Sans',sans-serif; cursor:pointer;
+}
+.profile-danger:hover:not(:disabled) { background:#A33D3D; border-color:#A33D3D; }
+.profile-danger:disabled { opacity:.62; cursor:default; }
 
 .loading-screen {
   min-height: 100vh;
@@ -2321,6 +2415,8 @@ label:has(input:focus-visible) {
   .profile-stat-grid { grid-template-columns:1fr 1fr; }
   .profile-actions { display:grid; grid-template-columns:1fr; }
   .profile-primary, .profile-secondary { width:100%; min-height:52px; font-size:16px; }
+  .reset-actions { grid-template-columns:1fr; }
+  .profile-danger { min-height:52px; font-size:16px; }
   .profile-close { width:46px; height:46px; }
 }
 `;
