@@ -37,6 +37,7 @@ const checks = [
   ["current rain wording does not use the outing peak", /function extrasFor\(threats, cond\)/.test(source) && !/function extrasFor\(threats, cond, peakRainRate/.test(source)],
   ["light rain can warn about heavier rain later", /cond\.wetLevel < 3 && outingWetLevel >= 3/.test(source) && /Heavy rain may develop before you return/.test(source)],
   ["rain clothing covers the full outing window", /const outingWetLevel = Math\.max/.test(source) && /Heavier rain may develop before you return/.test(source)],
+  ["departure time is absolute, not a live offset", /const \[departAt/.test(source) && /laterDepartureOptions/.test(source) && !/startOffset/.test(source)],
 ];
 
 let failed = 0;

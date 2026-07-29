@@ -45,7 +45,18 @@ const PRIOR_N = 3;
 const CLAMP = 15;
 const FACTOR_CLAMP = 7;
 const LEVELS = ["None", "Low", "Mod", "High"];
-const START_OFFSETS = [0, 1, 3, 6];
+const HOUR_MS = 60 * 60 * 1000;
+const HALF_HOUR_MS = 30 * 60 * 1000;
+// Absolute departure options, snapped to the clock (:00 / :30) so their labels
+// stay put between ticks and only advance when the half-hour rolls over. A
+// chosen time is stored as an absolute timestamp, never a live offset — so once
+// you pick "1:30", it stays 1:30 as the minutes pass.
+function laterDepartureOptions(nowMs) {
+  const base = Math.floor(nowMs / HALF_HOUR_MS) * HALF_HOUR_MS;
+  return [1, 2, 4, 6]
+    .map((h) => base + h * HOUR_MS)
+    .filter((t) => t > nowMs);
+}
 const DURATIONS = [
   { minutes: 20, label: "20 min" },
   { minutes: 60, label: "1 hr" },
@@ -641,7 +652,7 @@ export default function Layer() {
   const [weatherUpdatedAt, setWeatherUpdatedAt] = useState(null);
   const [activity, setActivity] = useState("walking");
   const [planOpen, setPlanOpen] = useState(false);
-  const [startOffset, setStartOffset] = useState(0);
+  const [departAt, setDepartAt] = useState(null); // null = leaving now; else absolute ms
   const [duration, setDuration] = useState(60);
   const [cycling, setCycling] = useState(false);
   const [askBlame, setAskBlame] = useState(null);
@@ -1041,9 +1052,18 @@ export default function Layer() {
   }, []);
 
   const outingStart = useMemo(
-    () => new Date(now.getTime() + startOffset * 60 * 60 * 1000),
-    [now, startOffset]
+    () => (departAt != null ? new Date(departAt) : now),
+    [departAt, now]
   );
+
+  // Departure choices for the "leave later" row: absolute, snapped times, plus
+  // the currently-chosen time if it has aged out of the generated set (so the
+  // user's selection always stays visible and highlighted).
+  const departureOptions = useMemo(() => {
+    const opts = laterDepartureOptions(now.getTime());
+    if (departAt != null && !opts.includes(departAt)) opts.push(departAt);
+    return opts.sort((a, b) => a - b);
+  }, [now, departAt]);
 
   const outingEnd = useMemo(
     () => new Date(outingStart.getTime() + duration * 60 * 1000),
@@ -1057,7 +1077,7 @@ export default function Layer() {
     const hourlyIndex = getClosestIndex(wx.hourly.time, startMs);
     const windowPlan = minutePlan ?? conditionWindow(wx.hourly, hourlyIndex, duration);
 
-    if (startOffset === 0 && wx.current) {
+    if (departAt == null && wx.current) {
       const apparentValues = [wx.current.apparent, ...windowPlan.apparent].filter(Number.isFinite);
       const rainRates = [wx.current.precipRate, ...(windowPlan.precipRates ?? [])].filter(Number.isFinite);
       return {
@@ -1081,7 +1101,7 @@ export default function Layer() {
     }
 
     return windowPlan;
-  }, [wx, outingStart, duration, startOffset, now]);
+  }, [wx, outingStart, duration, departAt, now]);
 
   const result = useMemo(() => {
     if (!plan) return null;
@@ -1274,7 +1294,7 @@ export default function Layer() {
       weather_code: plan.depart.code,
       is_day: (plan.depart.isDay ?? wx?.current?.isDay ?? 1) !== 0,
       activity,
-      start_offset: startOffset,
+      start_offset: departAt == null ? 0 : clamp(Math.round((departAt - now.getTime()) / HOUR_MS), 0, 48),
       duration,
       cycling,
       band: result.band.key,
@@ -1295,7 +1315,7 @@ export default function Layer() {
               ? "Got it — I’ll call the next one warmer."
               : "Got it — I’ll lighten the next call."
     );
-  }, [plan, result, model, activity, followed, commit, startOffset, duration, cycling, wx]);
+  }, [plan, result, model, activity, followed, commit, departAt, duration, cycling, wx, now]);
 
   const onFeedback = (kind) => {
     if (kind === "right") applyFeedback(0, null);
@@ -1331,7 +1351,7 @@ export default function Layer() {
   const ratingCount = model.history.length;
   const learningProgress = Math.min(95, Math.round((ratingCount / (ratingCount + 4)) * 100));
   const learningLabel = ratingCount === 0 ? "Starting profile" : `${learningProgress}% learned`;
-  const planningSummary = `${startOffset === 0 ? "Leaving now" : `Leaving ${formatTime(outingStart)}`} • ${DURATIONS.find((d) => d.minutes === duration)?.label || `${duration} min`} outside${cycling ? " • Cycling" : ""}`;
+  const planningSummary = `${departAt == null ? "Leaving now" : `Leaving ${formatTime(outingStart)}`} • ${DURATIONS.find((d) => d.minutes === duration)?.label || `${duration} min`} outside${cycling ? " • Cycling" : ""}`;
   const weatherAgeMinutes = weatherUpdatedAt == null ? null : Math.max(0, Math.floor((now.getTime() - weatherUpdatedAt) / 60000));
   const weatherAgeText = weatherRefreshing ? "Refreshing…" : weatherAgeMinutes == null ? "" : weatherAgeMinutes < 1 ? "Updated now" : `Updated ${weatherAgeMinutes} min ago`;
 
@@ -1430,7 +1450,7 @@ export default function Layer() {
               </button>
             </div>
             <div className="plan-block">
-              <span className="mini-l">{startOffset === 0 ? "How long will you be out?" : `Leaving ${formatTime(outingStart)} — for how long?`}</span>
+              <span className="mini-l">{departAt == null ? "How long will you be out?" : `Leaving ${formatTime(outingStart)} — for how long?`}</span>
               <div className="chips duration-chips">
                 {DURATIONS.map((d) => (
                   <button type="button" key={d.minutes} aria-pressed={duration === d.minutes} className={`chip ${duration === d.minutes ? "on" : ""}`} onClick={() => setDuration(d.minutes)}>{d.label}</button>
@@ -1440,11 +1460,12 @@ export default function Layer() {
             {planOpen && (
               <div id="outing-planner-controls" className="planner-body">
                 <div className="plan-block">
-                  <span className="mini-l">Leaving later?</span>
+                  <span className="mini-l">When are you leaving?</span>
                   <div className="chips">
-                    {START_OFFSETS.map((offset) => (
-                      <button type="button" key={offset} aria-pressed={startOffset === offset} className={`chip ${startOffset === offset ? "on" : ""}`} onClick={() => setStartOffset(offset)}>
-                        {offset === 0 ? "Now" : formatTime(new Date(now.getTime() + offset * 60 * 60 * 1000))}
+                    <button type="button" aria-pressed={departAt == null} className={`chip ${departAt == null ? "on" : ""}`} onClick={() => setDepartAt(null)}>Now</button>
+                    {departureOptions.map((ms) => (
+                      <button type="button" key={ms} aria-pressed={departAt === ms} className={`chip ${departAt === ms ? "on" : ""}`} onClick={() => setDepartAt(ms)}>
+                        {formatTime(new Date(ms))}
                       </button>
                     ))}
                   </div>
