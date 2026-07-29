@@ -103,5 +103,4 @@ precipitation signal cannot be hidden by an `Overcast` weather code. A conservat
 five-point campus rain probe also catches narrow showers that one forecast grid cell
 may miss. Pure weather-classification tests live in `src/lib/weather.test.js`.
 
-The interface labels the official apparent temperature as **Feels like**, shows whether
-data is live or cached, and credits Open-Meteo at the bottom of the page.
+The main comparison shows the actual **Temperature** now (or **Forecast** for a later departure) beside Layer’s personalized **For you** value. The standard feels-like temperature remains part of the explanation under **Why this outfit?**. Freshness stays visible beside the outing summary, while Open-Meteo attribution is kept in the profile rather than interrupting the weather screen.

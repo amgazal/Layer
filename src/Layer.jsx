@@ -193,15 +193,15 @@ function threatsFor({ effective, wind, gust, cond, precip, peakRainRate, isDay }
   const wetFromProb = precip >= 70 ? 3 : precip >= 40 ? 2 : precip >= 20 ? 1 : 0;
   const wet = Math.max(wetFromCond, wetFromRate, wetFromProb);
   const threats = [
-    { key: "cold", label: "Cold", Icon: Snowflake, level: cold, blame: "The cold itself got me" },
-    { key: "wind", label: "Wind", Icon: Wind, level: windLevel, blame: "The wind cut through" },
-    { key: "wet", label: "Wet", Icon: Droplets, level: wet, blame: "I got wet" },
+    { key: "cold", label: "Cold", Icon: Snowflake, level: cold, blame: "Cold" },
+    { key: "wind", label: "Wind", Icon: Wind, level: windLevel, blame: "Wind" },
+    { key: "wet", label: "Wet", Icon: Droplets, level: wet, blame: "Rain or dampness" },
   ];
 
   // At night there is no direct-sun exposure to display or calibrate.
   if (isDay) {
     const sun = cond.clear && effective >= 82 ? 3 : cond.clear && effective >= 72 ? 2 : cond.clear ? 1 : 0;
-    threats.push({ key: "sun", label: "Sun", Icon: Sun, level: sun, blame: "The sun was punishing" });
+    threats.push({ key: "sun", label: "Sun", Icon: Sun, level: sun, blame: "Direct sun" });
   }
   return threats;
 }
@@ -210,16 +210,16 @@ function extrasFor(threats, cond) {
   const out = [];
   const lv = (k) => threats.find((t) => t.key === k)?.level ?? 0;
   if (cond.snow) {
-    out.push({ Icon: Snowflake, text: "Waterproof boots — the ground will soak through." });
+    out.push({ Icon: Snowflake, text: "Wear waterproof boots if the ground is slushy." });
   } else if (cond.wetLevel >= 3) {
-    out.push({ Icon: Umbrella, text: "Heavy rain now — use a waterproof shell; an umbrella alone may not be enough." });
+    out.push({ Icon: Umbrella, text: "Heavy rain now — wear a waterproof jacket; an umbrella alone may not be enough." });
   } else if (cond.wetLevel === 2) {
-    out.push({ Icon: Umbrella, text: "Rain now — use a waterproof shell or rain jacket." });
+    out.push({ Icon: Umbrella, text: "Rain now — wear a waterproof jacket." });
   } else if (cond.wetLevel === 1) {
-    out.push({ Icon: Umbrella, text: "Light rain now — take a packable shell or umbrella." });
+    out.push({ Icon: Umbrella, text: "Light rain now — take a rain jacket or umbrella." });
   }
-  if (lv("wind") >= 2) out.push({ Icon: Wind, text: "Make the outer layer wind resistant." });
-  if (lv("sun") >= 2) out.push({ Icon: Sun, text: "Sunglasses and sunscreen if you’ll be out a while." });
+  if (lv("wind") >= 2) out.push({ Icon: Wind, text: cond.wet ? "Choose a rain jacket that also blocks the wind." : "A wind-blocking jacket will help." });
+  if (lv("sun") >= 2) out.push({ Icon: Sun, text: "Bring sunglasses and use sunscreen if you’ll be outside for a while." });
   return out;
 }
 
@@ -365,6 +365,60 @@ function garmentCategory(label) {
   return "TOP";
 }
 
+function isOuterwearLayer(label) {
+  return /coat|jacket|parka|shell/i.test(String(label || ""));
+}
+
+function rainOuterwear({ wetLevel, currentWetLevel, effective, activity }) {
+  let label;
+  if (wetLevel >= 3) {
+    label = effective < 29
+      ? "Waterproof insulated parka with hood"
+      : effective < 47
+        ? "Waterproof insulated coat with hood"
+        : effective < 65
+          ? "Waterproof jacket with hood"
+          : "Waterproof rain jacket with hood";
+  } else if (wetLevel >= 2) {
+    label = effective < 29
+      ? "Waterproof insulated parka"
+      : effective < 47
+        ? "Waterproof insulated coat"
+        : effective < 65
+          ? "Waterproof light jacket"
+          : "Waterproof shell or rain jacket";
+  } else {
+    label = effective < 29
+      ? "Water-resistant insulated parka"
+      : effective < 47
+        ? "Water-resistant insulated coat"
+        : effective < 65
+          ? "Water-resistant light jacket"
+          : "Packable rain shell";
+  }
+
+  let note;
+  if (currentWetLevel > 0 && wetLevel > currentWetLevel) {
+    note = wetLevel >= 3
+      ? "Wear it now; rain could become heavy before you return."
+      : "Wear it now; rain could get heavier while you’re out.";
+  } else if (currentWetLevel >= 3) {
+    note = "Wear it now; an umbrella alone may not be enough.";
+  } else if (currentWetLevel >= 2) {
+    note = activity === "dashing" ? "Keep it close for the trip." : "Wear it while you’re outside.";
+  } else if (currentWetLevel >= 1) {
+    note = "Wear it now or carry an umbrella.";
+  } else if (wetLevel >= 3) {
+    note = "Rain could become heavy before you return.";
+  } else if (wetLevel >= 2) {
+    note = "Steady rain could start while you’re out.";
+  } else {
+    note = "Rain could start before you return.";
+  }
+
+  return { label, note };
+}
+
 function weatherSceneKey(rawCode) {
   const code = Number(rawCode);
   if (code === 0 || code === 1 || code === 2) return "clear";
@@ -436,9 +490,9 @@ function Onboarding({ onDone }) {
           </div>
         </div>
         <div className="ob-privacy">
-          Layer saves your setup answers and outfit feedback to improve your
-          recommendations. It uses an anonymous identifier — no name, email, or
-          precise location is collected.
+          Layer uses these answers and your ratings to estimate what will feel comfortable.
+          Your profile is anonymous — no name, email, or precise device location is collected.
+          Weather can change quickly, so check official alerts in severe conditions.
         </div>
         <div className="ob-actions">
           <button className="ob-go" disabled={!climate || !tol} onClick={() => onDone(climate, tol, true)}>
@@ -1102,30 +1156,23 @@ export default function Layer() {
       ? [...baseBand.layers]
       : baseBand.layers.filter((layer) => !/sun protection|sunglasses|shade/i.test(layer.label));
 
+    if (!cond.clear) {
+      weatherLayers = weatherLayers.filter((layer) => !/sun protection|sunglasses|shade/i.test(layer.label));
+    }
+
     if (outingWetLevel > 0 && !cond.snow && !snowSoon) {
-      // The outfit covers the whole selected outing, while the condition label
-      // describes what is happening at departure. This prevents a future peak
-      // from being presented as though it were already happening now.
-      weatherLayers = weatherLayers.filter((layer) => !/thin layer for indoors/i.test(layer.label));
-      const rainLayer = outingWetLevel >= 3
-        ? {
-            label: "Waterproof rain jacket with hood",
-            note: cond.wetLevel >= 3
-              ? "Wear it now — an umbrella alone may not be enough."
-              : "Heavier rain may develop before you return.",
-          }
-        : outingWetLevel >= 2
-          ? {
-              label: "Waterproof shell or rain jacket",
-              note: cond.wetLevel >= 2
-                ? (activity === "dashing" ? "Keep it ready." : "Wear it for the walk.")
-                : "Rain may strengthen during the outing.",
-            }
-          : {
-              label: "Packable rain shell",
-              note: cond.wet ? "Light rain protection." : "Rain may begin before you return.",
-            };
-      weatherLayers.push(rainLayer);
+      // Give the user one clear outerwear choice instead of stacking a generic
+      // jacket and a separate rain shell. The recommendation still covers the
+      // whole selected outing, while the condition label describes departure.
+      weatherLayers = weatherLayers.filter((layer) =>
+        !/thin layer for indoors/i.test(layer.label) && !isOuterwearLayer(layer.label)
+      );
+      weatherLayers.push(rainOuterwear({
+        wetLevel: outingWetLevel,
+        currentWetLevel: cond.wetLevel || 0,
+        effective,
+        activity,
+      }));
     }
 
     const band = {
@@ -1135,9 +1182,9 @@ export default function Layer() {
         : cond.wet
           ? "Rain protection needed."
           : outingWetLevel >= 3
-            ? "Waterproof layer recommended."
+            ? "Pack a waterproof layer."
             : outingWetLevel > 0
-              ? "Rain protection recommended."
+              ? "Pack rain protection."
               : baseBand.sub,
       layers: weatherLayers,
     };
@@ -1154,25 +1201,25 @@ export default function Layer() {
     const tempDelta = Math.round(plan.endApparent - plan.depart.apparent);
     const whyLines = [];
     if (personalShift !== 0) {
-      whyLines.push(`The official feels-like reading is ${base}°, and your profile adjusts it to ${effective}°.`);
+      whyLines.push(`It feels like ${base}° before personalization. Your profile shifts the recommendation to ${effective}°.`);
     } else {
-      whyLines.push(`The official feels-like reading is ${base}° for this outing.`);
+      whyLines.push(`It feels like ${base}° before activity and outing adjustments.`);
     }
 
     if (activity === "waiting") {
-      whyLines.push("Standing still produces less body heat, so the recommendation runs warmer.");
+      whyLines.push("Standing still creates less body heat, so Layer recommends a little more warmth.");
     } else if (activity === "walking") {
-      whyLines.push("Walking adds some body heat, so the recommendation avoids unnecessary layers.");
+      whyLines.push("Walking adds body heat, so Layer avoids unnecessary layers.");
     } else {
-      whyLines.push("This is a short dash, so the recommendation prioritizes quick comfort over extra layers.");
+      whyLines.push("This is a short trip, so Layer keeps the outfit light.");
     }
 
     if (cycling) {
-      whyLines.push("Cycling increases wind exposure, so the outer layer matters more.");
+      whyLines.push("Cycling makes the air feel windier, so a jacket that blocks wind will help.");
     } else if (plan.depart.wind >= 12) {
       whyLines.push(`Wind is around ${plan.depart.wind} mph, which can make exposed areas feel cooler.`);
     } else if (cond.wet || plan.depart.precip >= 30) {
-      whyLines.push("Wet conditions increase heat loss, so a water-resistant layer is more useful.");
+      whyLines.push("Rain and damp clothing can make you feel colder, so a water-resistant layer helps.");
     } else if (isDay && cond.clear && base >= 72) {
       whyLines.push("Direct sun can add warmth, especially during a longer walk.");
     } else if (duration >= 60) {
@@ -1312,10 +1359,10 @@ export default function Layer() {
     : weatherAgeMinutes == null
       ? ""
       : wxState === "cached"
-        ? weatherAgeMinutes < 1 ? "Cached · just now" : `Cached · ${weatherAgeMinutes} min old`
+        ? weatherAgeMinutes < 1 ? "Cached just now" : `Cached ${weatherAgeMinutes} min ago`
         : wxState === "offline"
-          ? "Offline sample"
-          : weatherAgeMinutes < 1 ? "Live · updated now" : `Live · ${weatherAgeMinutes} min ago`;
+          ? "Sample data"
+          : weatherAgeMinutes < 1 ? "Updated now" : `Updated ${weatherAgeMinutes} min ago`;
   const conditionText = departAt == null && wx?.current?.rainScope === "nearby" && cond.wet
     ? "Passing rain around campus"
     : cond.label;
@@ -1402,7 +1449,9 @@ export default function Layer() {
                 <span className="read-k">For you</span>
                 <span className="read-v">{result.effective}°</span>
               </div>
-              {result.personalShift !== 0 && <span className="shift">{result.personalShift > 0 ? "+" : ""}{result.personalShift}° personal</span>}
+              {result.personalShift !== 0 && (
+                <span className="shift">{Math.abs(result.personalShift)}° {result.personalShift < 0 ? "cooler" : "warmer"} for you</span>
+              )}
             </div>
             <div className="hero-foot"><span>{planningSummary}</span>{weatherAgeText && <span className="weather-age" role="status" aria-live="polite">{weatherAgeText}</span>}</div>
           </section>
@@ -1444,7 +1493,7 @@ export default function Layer() {
             )}
             <div className="planner-summary">
               <span><Clock3 size={14} strokeWidth={2.2} /> {`${formatTime(outingStart)}–${formatTime(outingEnd)}`}</span>
-              <span>Feels {result?.rangeText || "--"}</span>
+              <span>Feels like {result?.rangeText || "--"}</span>
             </div>
           </aside>
 
@@ -1499,9 +1548,9 @@ export default function Layer() {
                   </span>
                 )}
                 {result.snowSoon && <span><Snowflake size={14} strokeWidth={2.4} /> Snow may begin before you return.</span>}
-                {result.heavyRainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Heavy rain may develop before you return.</span>}
-                {result.rainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Rain risk rises to about {result.peakPrecip}% before you return.</span>}
-                {result.cycling && <span><Bike size={14} strokeWidth={2.4} /> Cycling adds stronger wind exposure.</span>}
+                {result.heavyRainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Rain could become heavy before you return.</span>}
+                {result.rainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Chance of rain rises to about {result.peakPrecip}% before you return.</span>}
+                {result.cycling && <span><Bike size={14} strokeWidth={2.4} /> Cycling will make the wind feel stronger.</span>}
               </div>
             )}
           </section>
@@ -1546,7 +1595,8 @@ export default function Layer() {
           </section>
 
           <section className="card glass main-card feedback-card">
-            <h2 className="card-h">How did it feel out there?</h2>
+            <h2 className="card-h">How did the recommendation feel?</h2>
+            <p className="card-sub feedback-copy">Rate it after your outing.</p>
             <div className="follow-line">
               <span className="follow-q">Did you follow the recommendation?</span>
               <div className="follow-chips">
@@ -1563,7 +1613,7 @@ export default function Layer() {
               </div>
             ) : (
               <div className="blame">
-                <div className="blame-h"><span>What got you?</span><button className="icon-btn" onClick={() => setAskBlame(null)}><X size={15} strokeWidth={2.4} /></button></div>
+                <div className="blame-h"><span>What affected your comfort?</span><button className="icon-btn" onClick={() => setAskBlame(null)}><X size={15} strokeWidth={2.4} /></button></div>
                 <div className="blame-list">
                   {result?.threats.filter((t) => (result.isDay || t.key !== "sun") && (askBlame === "cold" ? t.key !== "sun" : true)).map((t) => {
                     const T = t.Icon;
@@ -1573,7 +1623,7 @@ export default function Layer() {
                       </button>
                     );
                   })}
-                  <button className="blame-b blame-skip" onClick={() => applyFeedback(askBlame === "cold" ? -1 : 1, null)}>Not sure — just off overall</button>
+                  <button className="blame-b blame-skip" onClick={() => applyFeedback(askBlame === "cold" ? -1 : 1, null)}>Not sure — it just felt off</button>
                 </div>
               </div>
             )}
@@ -1667,9 +1717,6 @@ export default function Layer() {
 
           {ENABLE_ACCOUNT_UPGRADE && <AccountUpgrade ratingCount={ratingCount} />}
 
-          <footer className="data-credit">
-            Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a> · Recommendations are personalized estimates.
-          </footer>
         </main>
       </div>
 
@@ -1772,6 +1819,10 @@ export default function Layer() {
                 </div>
               </div>
             )}
+
+            <p className="profile-about">
+              Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a>.
+            </p>
           </section>
         </div>
       , document.body)}
@@ -2092,6 +2143,7 @@ const css = `
 .lv-1 .seg.fill { background: #93C86A; }
 .lv-2 .seg.fill { background: #E9B34C; }
 .lv-3 .seg.fill { background: #E0703C; }
+.feedback-copy { margin:6px 0 16px; }
 .follow-line { display:flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .follow-q { color:#5A6A82; font-size: 15px; }
 .fb-row { display:flex; gap: 10px; }
@@ -2119,12 +2171,6 @@ const css = `
 .sp { width: 18px; height: 18px; border-radius: 4px; background: rgba(17,32,51,.09); }
 .sp.right { background: #6FB558; } .sp.cold { background: #7FB6DD; } .sp.warm { background: #E9B93F; }
 .empty { margin: 0 0 18px; color:#62728A; }
-.data-credit {
-  grid-column: 1 / -1; padding: 2px 4px 16px; text-align:center;
-  color: rgba(255,255,255,.68); font-size:11.5px; line-height:1.5;
-}
-.data-credit a { color:inherit; text-underline-offset:3px; }
-.data-credit a:hover { color:#FFFFFF; }
 .calibration-head { align-items: flex-start; }
 .calibration-copy { margin: 8px 0 0; color:#62728A; line-height:1.45; max-width:560px; }
 .personalization-summary {
@@ -2233,6 +2279,9 @@ const css = `
 .profile-ok { color:#4AA56A; }
 .profile-storage-compact { align-items:center; }
 .profile-note { margin:12px 2px 0; color:#718097; font-size:12.5px; line-height:1.45; }
+.profile-about { margin:18px 2px 0; padding-top:14px; border-top:1px solid #E4EAF1; color:#8490A2; font-size:11.5px; line-height:1.4; text-align:center; }
+.profile-about a { color:inherit; text-underline-offset:3px; }
+.profile-about a:hover { color:#44536A; }
 .profile-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
 .profile-primary, .profile-secondary {
   min-height:48px; border-radius:14px; padding:12px 16px; font-weight:800; cursor:pointer;
