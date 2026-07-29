@@ -2,6 +2,7 @@ import fs from "node:fs";
 
 const source = fs.readFileSync(new URL("../src/Layer.jsx", import.meta.url), "utf8");
 const sync = fs.readFileSync(new URL("../src/lib/sync.js", import.meta.url), "utf8");
+const weather = fs.readFileSync(new URL("../src/lib/weather.js", import.meta.url), "utf8");
 
 const checks = [
   ["weather API requests current is_day", /current=[^`\n]*is_day/.test(source)],
@@ -14,7 +15,7 @@ const checks = [
   ["empty threat levels do not force a filled bar", !/Math\.max\(t\.level,\s*1\)/.test(source)],
   ["cloud requires explicit opt-in", /return cloudPreference\(\) === "on"/.test(sync)],
   ["outbox removes only uploaded IDs", /uploadedIds[\s\S]*latest\.filter/.test(sync)],
-  ["rain intensity reconciles WMO code with a 15-minute rate", /rateFrom15MinuteTotal/.test(source) && /Math\.max\(wmoRainSeverity\(value\), measured\)/.test(source)],
+  ["rain intensity reconciles WMO code with a measured rate", /rainIntensityFromRate/.test(weather) && /measured > 0 \|\| codedRain/.test(weather)],
   ["weather request includes current and 15-minute precipitation", /current=[^`\n]*,precipitation,/.test(source) && /minutely_15=[^`\n]*precipitation/.test(source)],
   ["weather refreshes automatically", /ACTIVE_RAIN_REFRESH_MS/.test(source) && /setInterval\(\(\) => loadWeather\(true\)/.test(source)],
   ["rain video follows live conditions", /liveCond\.category === "rain"/.test(source) && /rain-loop\.mp4/.test(source) && /<video/.test(source)],
@@ -31,7 +32,9 @@ const checks = [
   ["synthetic rain streak overlay is removed", !/rain-overlay/.test(source) && !/@keyframes rainfall/.test(source)],
   ["onboarding heading is not duplicated", (source.match(/Cold is personal\./g) || []).length === 1],
   ["balanced outing durations are offered", /"20 min"/.test(source) && /"1 hr"/.test(source) && /"2 hrs"/.test(source) && /"4\+ hrs"/.test(source)],
-  ["live rain uses the latest completed interval", /getLatestIndexAtOrBefore/.test(source) && /currentLiquidTotal/.test(source)],
+  ["live rain uses the latest completed interval", /getLatestIndexAtOrBefore/.test(weather) && /rainSignalFromLocation/.test(weather)],
+  ["overcast cannot mask measured rain", /Pure condition classifier/.test(weather) && weather.indexOf("if (measured > 0 || codedRain)") < weather.indexOf("if (value === 3)")],
+  ["localised campus showers use a conservative multi-point fallback", /CAMPUS_RAIN_POINTS/.test(source) && /campusRainConsensus/.test(source) && /rainProbeUrl/.test(source)],
   ["rain condition controls the scene", /key: liveCond\.category/.test(source)],
   ["active rain adds waterproof clothing", /Waterproof rain jacket with hood/.test(source) && /Packable rain shell/.test(source)],
   ["current rain wording does not use the outing peak", /function extrasFor\(threats, cond\)/.test(source) && !/function extrasFor\(threats, cond, peakRainRate/.test(source)],

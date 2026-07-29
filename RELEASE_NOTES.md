@@ -54,3 +54,12 @@
 - Outfit protection considers the full selected outing window.
 - Future heavy rain is labelled as developing later instead of being presented as current heavy rain.
 - Footer rain advice now matches the current rain intensity.
+
+
+## Final rain classification fix
+
+- Fixed an ordering bug where WMO code 3 returned `Overcast` before measured rain was checked.
+- Moved pure rain classification into `src/lib/weather.js` and added unit tests.
+- Added a conservative five-point campus rain probe for highly localised showers.
+- Changed the first temperature label from `Forecast` to `Feels like`.
+- Improved freshness wording and added required Open-Meteo attribution.

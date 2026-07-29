@@ -8,6 +8,15 @@ import {
   HardDrive
 } from "lucide-react";
 import {
+  CLAMP, clamp, deepCopy, EMPTY_MODEL, normalizeModel,
+  pooledOffset, totalObservations, updateModel,
+} from "./lib/model";
+import {
+  campusRainConsensus, classifyWeather, getLatestIndexAtOrBefore,
+  rainIntensityFromRate, rainSignalFromLocation,
+  rateFrom15MinuteTotal, wmoRainSeverity,
+} from "./lib/weather";
+import {
   ensureAuth, pullModel, pushModel, pushProfile, logEvent,
   flushOutbox, setCloudPref, subscribeCloud, retryCloud,
   subscribeAuth, upgradeWithEmail,
@@ -21,8 +30,20 @@ const CAMPUS = {
   lon: -76.4735,
 };
 
+// A lightweight set of nearby campus points catches highly localised showers
+// that can fall between forecast grid cells. The central point still controls
+// temperature and wind; nearby points are used only as a conservative rain
+// fallback.
+const CAMPUS_RAIN_POINTS = [
+  [42.4534, -76.4735], // central campus
+  [42.4603, -76.4780], // north campus
+  [42.4480, -76.4630], // east campus
+  [42.4460, -76.4820], // south-west campus
+  [42.4610, -76.4650], // north-east campus
+];
+
 const MODEL_KEY = "layer:model:v5";
-const CACHE_KEY = "layer:wx-cache:v6";
+const CACHE_KEY = "layer:wx-cache:v7";
 const CACHE_TTL = 5 * 60 * 1000;
 const WEATHER_REFRESH_MS = 5 * 60 * 1000;
 const ACTIVE_RAIN_REFRESH_MS = 2 * 60 * 1000;
@@ -38,12 +59,6 @@ const BACKGROUNDS = {
 };
 const RAIN_VIDEO = `${ASSET_BASE}backgrounds/rain-loop.mp4`;
 
-const CENTERS = { cold: 33, mild: 60, warm: 82 };
-const KERNEL = 15;
-const STEP_MAX = 4.5;
-const PRIOR_N = 3;
-const CLAMP = 15;
-const FACTOR_CLAMP = 7;
 const LEVELS = ["None", "Low", "Mod", "High"];
 const HOUR_MS = 60 * 60 * 1000;
 const HALF_HOUR_MS = 30 * 60 * 1000;
@@ -83,13 +98,8 @@ const ACTIVITIES = {
   dashing: { label: "Quick trip", Icon: Car, adj: 6, hint: "Door to car to door" },
 };
 
-const EMPTY_MODEL = {
-  v: 5,
-  seeded: false,
-  regime: { cold: { off: 0, n: 0 }, mild: { off: 0, n: 0 }, warm: { off: 0, n: 0 } },
-  factors: { wind: 0, wet: 0, sun: 0 },
-  history: [],
-};
+
+
 
 const BANDS = [
   { key: "hot", min: 84, accent: "#E88834", sky: ["#6EA6FF", "#F3B66E"], verdict: "Hot out there", sub: "Keep it light.", layers: [
@@ -135,8 +145,6 @@ const BANDS = [
     ] },
 ];
 
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-const deepCopy = (v) => JSON.parse(JSON.stringify(v));
 const bandFor = (t) => BANDS.find((b) => t >= b.min) || BANDS[BANDS.length - 1];
 
 async function storageGet(key) {
@@ -156,137 +164,21 @@ async function storageSet(key, value) {
   } catch {}
 }
 
-function normalizeModel(raw) {
-  if (!raw || typeof raw !== "object") return deepCopy(EMPTY_MODEL);
-  const next = deepCopy(EMPTY_MODEL);
-  next.seeded = Boolean(raw.seeded);
-  for (const k of Object.keys(next.regime)) {
-    next.regime[k].off = Number(raw.regime?.[k]?.off) || 0;
-    next.regime[k].n = Number(raw.regime?.[k]?.n) || 0;
-  }
-  for (const k of Object.keys(next.factors)) {
-    next.factors[k] = Number(raw.factors?.[k]) || 0;
-  }
-  next.history = Array.isArray(raw.history) ? raw.history.slice(-80) : [];
-  return next;
-}
-
-function kernelWeights(t) {
-  const raw = {};
-  let sum = 0;
-  for (const key in CENTERS) {
-    const w = Math.exp(-Math.pow((t - CENTERS[key]) / KERNEL, 2));
-    raw[key] = w;
-    sum += w;
-  }
-  for (const key in raw) raw[key] /= sum || 1;
-  return raw;
-}
-
-function pooledOffset(model, t) {
-  const weights = kernelWeights(t);
-  return Object.keys(weights).reduce((sum, key) => sum + weights[key] * model.regime[key].off, 0);
-}
-
-const totalObservations = (m) => m.regime.cold.n + m.regime.mild.n + m.regime.warm.n;
-const confidence = (m) => Math.round((totalObservations(m) / (totalObservations(m) + 4)) * 100);
-
-// Actual rainfall rate (mm in the last hour) → 0 none · 1 light · 2 moderate · 3 heavy.
-// Standard meteorological rain-rate bands, so the label matches what you'd feel.
-function rainIntensityFromRate(rateMmPerHour) {
-  const rate = Math.max(0, Number(rateMmPerHour) || 0);
-  if (rate >= 7.5) return 3;
-  if (rate >= 2.5) return 2;
-  if (rate >= 0.2) return 1;
-  return 0;
-}
-
-function rateFrom15MinuteTotal(totalMm) {
-  return Math.max(0, Number(totalMm) || 0) * 4;
-}
-
-function rateFromIntervalTotal(totalMm, intervalSeconds = 900) {
-  const seconds = Math.max(60, Number(intervalSeconds) || 900);
-  return Math.max(0, Number(totalMm) || 0) * (3600 / seconds);
-}
-
-function liquidPrecipitationTotal(source, index = null) {
-  const read = (key) => {
-    const value = index == null ? source?.[key] : source?.[key]?.[index];
-    return Math.max(0, Number(value) || 0);
-  };
-  // `precipitation` already includes rain and showers, but some models expose
-  // the liquid components more reliably. Taking the larger signal avoids
-  // double-counting while still catching a shower the aggregate missed.
-  return Math.max(read("precipitation"), read("rain") + read("showers"));
-}
-
-function wmoRainSeverity(code) {
-  const value = Number(code);
-  if ([57, 65, 67, 82, 95, 96, 99].includes(value)) return 3;
-  if ([53, 55, 63, 81].includes(value)) return 2;
-  if ([51, 56, 61, 66, 80].includes(value)) return 1;
-  return 0;
-}
-
 function decodeWeather(code, isDay = 1, rainRateMmPerHour = 0) {
-  const value = Number(code);
-  const daytime = Number(isDay) !== 0;
-  const make = (label, Icon, extra = {}) => ({
-    label, Icon, wet: false, snow: false, clear: false,
-    category: "cloudy", wetLevel: 0, rainRate: 0, thunder: false, ...extra,
-  });
-
-  if (value === 0) return daytime
-    ? make("Clear", Sun, { clear: true, category: "clear" })
-    : make("Clear night", Moon, { clear: true, category: "clear" });
-  if (value === 1 || value === 2) return daytime
-    ? make("Partly cloudy", CloudSun, { clear: true, category: "clear" })
-    : make("Partly cloudy", CloudMoon, { clear: true, category: "clear" });
-  if (value === 3) return make("Overcast", Cloud, { category: "cloudy" });
-  if (value === 45 || value === 48) return make("Fog", CloudFog, { category: "cloudy" });
-
-  if ((value >= 71 && value <= 77) || (value >= 85 && value <= 86)) {
-    const heavy = value === 75 || value === 86;
-    const moderate = value === 73;
-    return make(
-      heavy ? "Heavy snow" : moderate ? "Snow" : "Light snow",
-      CloudSnow,
-      { snow: true, category: "snow", wetLevel: heavy ? 3 : moderate ? 2 : 1 },
-    );
-  }
-
-  const thunder = value >= 95 && value <= 99;
-  const drizzle = value >= 51 && value <= 57;
-  const measured = rainIntensityFromRate(rainRateMmPerHour);
-  // A short-range model can lag a rapidly forming shower. Measured/modelled
-  // 15-minute precipitation therefore counts as rain even when the WMO code
-  // still says overcast.
-  const liquid = measured > 0 || drizzle || (value >= 61 && value <= 67) || (value >= 80 && value <= 82) || thunder;
-  if (liquid) {
-    const intensity = Math.max(wmoRainSeverity(value), measured);
-    const freezing = value === 56 || value === 57 || value === 66 || value === 67;
-    const hail = value === 96 || value === 99;
-
-    let label;
-    if (hail) label = "Thunderstorm with hail";
-    else if (thunder) label = "Thunderstorm";
-    else if (freezing) label = intensity >= 3 ? "Heavy freezing rain" : "Freezing rain";
-    else if (intensity >= 3) label = "Heavy rain";
-    else if (intensity === 2) label = drizzle ? "Dense drizzle" : "Rain";
-    else label = drizzle ? "Drizzle" : "Light rain";
-
-    return make(label, thunder ? Zap : intensity >= 2 ? CloudRain : CloudDrizzle, {
-      wet: true,
-      category: "rain",
-      wetLevel: Math.max(1, intensity),
-      rainRate: Math.max(0, Number(rainRateMmPerHour) || 0),
-      thunder,
-      freezing,
-    });
-  }
-
-  return make("Cloudy", Cloud, { category: "cloudy" });
+  const state = classifyWeather(code, isDay, rainRateMmPerHour);
+  const icons = {
+    sun: Sun,
+    moon: Moon,
+    "partly-day": CloudSun,
+    "partly-night": CloudMoon,
+    cloud: Cloud,
+    fog: CloudFog,
+    drizzle: CloudDrizzle,
+    rain: CloudRain,
+    thunder: Zap,
+    snow: CloudSnow,
+  };
+  return { ...state, Icon: icons[state.iconKey] ?? Cloud };
 }
 
 function threatsFor({ effective, wind, gust, cond, precip, peakRainRate, isDay }) {
@@ -345,16 +237,6 @@ function getClosestIndex(times, targetMs) {
       minDiff = diff;
       best = i;
     }
-  }
-  return best;
-}
-
-function getLatestIndexAtOrBefore(times, targetMs) {
-  if (!times?.length) return -1;
-  let best = -1;
-  for (let i = 0; i < times.length; i++) {
-    if (asDate(times[i]).getTime() <= targetMs) best = i;
-    else break;
   }
   return best;
 }
@@ -885,33 +767,63 @@ export default function Layer() {
       `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,rain,showers,precipitation_probability,is_day` +
       `&minutely_15=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,rain,showers,is_day` +
       `&hourly=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,precipitation_probability,is_day` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FNew_York&timeformat=unixtime&forecast_minutely_15=96&forecast_days=2`;
+      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FNew_York&timeformat=unixtime&past_minutely_15=2&forecast_minutely_15=96&forecast_days=2`;
+
+    const probeLatitudes = CAMPUS_RAIN_POINTS.map(([lat]) => lat).join(",");
+    const probeLongitudes = CAMPUS_RAIN_POINTS.map(([, lon]) => lon).join(",");
+    const rainProbeUrl = `https://api.open-meteo.com/v1/forecast?latitude=${probeLatitudes}&longitude=${probeLongitudes}` +
+      `&current=weather_code,precipitation,rain,showers` +
+      `&minutely_15=weather_code,precipitation,rain,showers` +
+      `&timezone=America%2FNew_York&timeformat=unixtime&past_minutely_15=2&forecast_minutely_15=2`;
 
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10000);
-      const res = await fetch(url, { signal: ctrl.signal });
+      const [mainResult, probeResult] = await Promise.allSettled([
+        fetch(url, { signal: ctrl.signal }),
+        fetch(rainProbeUrl, { signal: ctrl.signal }),
+      ]);
       clearTimeout(timer);
-      if (!res.ok) throw new Error(`weather request failed (${res.status})`);
-      const data = await res.json();
+
+      if (mainResult.status !== "fulfilled" || !mainResult.value.ok) {
+        const status = mainResult.status === "fulfilled" ? mainResult.value.status : "network";
+        throw new Error(`weather request failed (${status})`);
+      }
+      const data = await mainResult.value.json();
 
       const currentMs = typeof data.current?.time === "number" ? data.current.time * 1000 : Date.now();
       // 15-minute precipitation values describe the interval that just ended.
-      // Never use the closest *future* interval for a live condition: at 11:38,
-      // choosing 11:45 can incorrectly erase rain that is falling right now.
+      // Never let a future interval erase rain that is already falling.
       const minuteIndex = data.minutely_15?.time?.length
         ? getLatestIndexAtOrBefore(data.minutely_15.time, currentMs)
         : -1;
 
-      const currentLiquidTotal = liquidPrecipitationTotal(data.current);
-      const currentRainRate = rateFromIntervalTotal(currentLiquidTotal, data.current?.interval ?? 900);
-      const recentLiquidTotal = minuteIndex >= 0 ? liquidPrecipitationTotal(data.minutely_15, minuteIndex) : 0;
-      const recentRainRate = rateFrom15MinuteTotal(recentLiquidTotal);
-      const rainRate = Math.max(currentRainRate, recentRainRate);
+      const primaryRainSignal = rainSignalFromLocation(data);
+      const currentProbability = Math.round(probabilityAt(data.hourly, currentMs));
+      let campusRainSignal = { ...primaryRainSignal, scope: primaryRainSignal.severity > 0 ? "primary" : "none", support: primaryRainSignal.severity > 0 ? 1 : 0 };
 
+      // A single forecast grid point can miss a narrow shower across Cornell's
+      // spread-out campus. A lightweight multi-point request is used only to
+      // strengthen the rain signal; it never changes temperature or wind.
+      if (probeResult.status === "fulfilled" && probeResult.value.ok) {
+        try {
+          const probeJson = await probeResult.value.json();
+          const locations = Array.isArray(probeJson) ? probeJson : [probeJson];
+          const signals = locations.map(rainSignalFromLocation);
+          if (signals.length) signals[0] = primaryRainSignal;
+          campusRainSignal = campusRainConsensus(signals, currentProbability);
+        } catch (probeError) {
+          console.warn("[weather] campus rain probe unavailable:", probeError?.message || probeError);
+        }
+      }
+
+      const rainRate = Math.max(primaryRainSignal.rate, campusRainSignal.rate);
       const rawCurrentCode = Number(data.current?.weather_code ?? 3);
       const recentCode = minuteIndex >= 0 ? Number(data.minutely_15.weather_code?.[minuteIndex] ?? rawCurrentCode) : rawCurrentCode;
-      const currentCode = wmoRainSeverity(recentCode) > wmoRainSeverity(rawCurrentCode) ? recentCode : rawCurrentCode;
+      const strongestCode = wmoRainSeverity(recentCode) > wmoRainSeverity(rawCurrentCode) ? recentCode : rawCurrentCode;
+      const currentCode = campusRainSignal.severity > wmoRainSeverity(strongestCode)
+        ? Number(campusRainSignal.code ?? strongestCode)
+        : strongestCode;
       const currentIsDay = Number(data.current?.is_day ?? (minuteIndex >= 0 ? data.minutely_15.is_day?.[minuteIndex] : 1) ?? 1);
       const currentWind = Number(data.current?.wind_speed_10m ?? (minuteIndex >= 0 ? data.minutely_15.wind_speed_10m?.[minuteIndex] : 0) ?? 0);
       const currentGust = Number(data.current?.wind_gusts_10m ?? (minuteIndex >= 0 ? data.minutely_15.wind_gusts_10m?.[minuteIndex] : currentWind) ?? currentWind);
@@ -923,8 +835,10 @@ export default function Layer() {
           code: currentCode,
           wind: Math.round(currentWind),
           gust: Math.round(currentGust),
-          precip: Math.round(probabilityAt(data.hourly, currentMs)),
+          precip: currentProbability,
           precipRate: rainRate,
+          rainScope: campusRainSignal.scope,
+          rainSupport: campusRainSignal.support,
           time: data.current.time,
           isDay: currentIsDay,
         },
@@ -1252,8 +1166,8 @@ export default function Layer() {
 
   const applyFeedback = useCallback((direction, blameKey) => {
     if (!plan || !result) return;
-    const next = deepCopy(model);
-    next.history = [...next.history, {
+    const withHistory = deepCopy(model);
+    withHistory.history = [...withHistory.history, {
       at: Date.now(),
       apparent: plan.depart.apparent,
       effective: result.effective,
@@ -1263,22 +1177,13 @@ export default function Layer() {
       blame: blameKey || null,
     }].slice(-80);
 
-    if (direction !== 0 && followed !== "no") {
-      const weights = kernelWeights(plan.depart.apparent);
-      const alpha = PRIOR_N / (PRIOR_N + totalObservations(model));
-      const reliability = followed === "mostly" ? 0.45 : 1;
-      const delta = direction * STEP_MAX * alpha * reliability;
-      const toFactor = blameKey && blameKey !== "cold" ? 0.7 : 0;
-      const toTemp = 1 - toFactor;
-      for (const key in weights) {
-        next.regime[key].off = clamp(next.regime[key].off + delta * weights[key] * toTemp, -CLAMP, CLAMP);
-        next.regime[key].n += weights[key] * reliability;
-      }
-      if (toFactor > 0) {
-        const sign = blameKey === "sun" ? 1 : -1;
-        next.factors[blameKey] = clamp((next.factors[blameKey] ?? 0) + sign * direction * STEP_MAX * alpha * toFactor * reliability, -FACTOR_CLAMP, FACTOR_CLAMP);
-      }
-    }
+    // The calibration math lives in ./lib/model (pure + unit-tested).
+    const next = updateModel(withHistory, {
+      apparentTemp: plan.depart.apparent,
+      direction,
+      blameKey,
+      followed,
+    });
 
     commit(next);
 
@@ -1353,7 +1258,18 @@ export default function Layer() {
   const learningLabel = ratingCount === 0 ? "Starting profile" : `${learningProgress}% learned`;
   const planningSummary = `${departAt == null ? "Leaving now" : `Leaving ${formatTime(outingStart)}`} • ${DURATIONS.find((d) => d.minutes === duration)?.label || `${duration} min`} outside${cycling ? " • Cycling" : ""}`;
   const weatherAgeMinutes = weatherUpdatedAt == null ? null : Math.max(0, Math.floor((now.getTime() - weatherUpdatedAt) / 60000));
-  const weatherAgeText = weatherRefreshing ? "Refreshing…" : weatherAgeMinutes == null ? "" : weatherAgeMinutes < 1 ? "Updated now" : `Updated ${weatherAgeMinutes} min ago`;
+  const weatherAgeText = weatherRefreshing
+    ? "Checking campus…"
+    : weatherAgeMinutes == null
+      ? ""
+      : wxState === "cached"
+        ? weatherAgeMinutes < 1 ? "Cached · just now" : `Cached · ${weatherAgeMinutes} min old`
+        : wxState === "offline"
+          ? "Offline sample"
+          : weatherAgeMinutes < 1 ? "Live · updated now" : `Live · ${weatherAgeMinutes} min ago`;
+  const conditionText = departAt == null && wx?.current?.rainScope === "nearby" && cond.wet
+    ? "Passing rain around campus"
+    : cond.label;
 
   return (
     <div
@@ -1423,13 +1339,13 @@ export default function Layer() {
           <section className="hero">
             <div className="hero-meta">
               <div className="hero-place">{CAMPUS.name}</div>
-              <div className="hero-date">{todayText} <span className="dot" /> {timeText} <span className="dot" /> <span className="cond-inline">{ConditionIcon ? <ConditionIcon size={15} strokeWidth={2.2} /> : null}{cond.label}</span></div>
+              <div className="hero-date" role="status" aria-live="polite">{todayText} <span className="dot" /> {timeText} <span className="dot" /> <span className="cond-inline">{ConditionIcon ? <ConditionIcon size={15} strokeWidth={2.2} /> : null}{conditionText}</span></div>
             </div>
             <h1 className="verdict">{result.band.verdict}</h1>
             <p className="sub">{result.band.sub}</p>
             <div className="reads">
               <div className="read">
-                <span className="read-k">Forecast</span>
+                <span className="read-k">Feels like</span>
                 <span className="read-v">{plan.depart.apparent}°</span>
               </div>
               <ArrowRight size={18} strokeWidth={2.4} className="read-arrow" />
@@ -1439,7 +1355,7 @@ export default function Layer() {
               </div>
               {result.personalShift !== 0 && <span className="shift">{result.personalShift > 0 ? "+" : ""}{result.personalShift}° personal</span>}
             </div>
-            <div className="hero-foot"><span>{planningSummary}</span>{weatherAgeText && <span className="weather-age">{weatherAgeText}</span>}</div>
+            <div className="hero-foot"><span>{planningSummary}</span>{weatherAgeText && <span className="weather-age" role="status" aria-live="polite">{weatherAgeText}</span>}</div>
           </section>
 
           <aside className="planner glass card compact-planner planner-card">
@@ -1701,6 +1617,10 @@ export default function Layer() {
           </section>
 
           {ENABLE_ACCOUNT_UPGRADE && <AccountUpgrade ratingCount={ratingCount} />}
+
+          <footer className="data-credit">
+            Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a> · Recommendations are personalized estimates.
+          </footer>
         </main>
       </div>
 
@@ -2123,6 +2043,12 @@ const css = `
 .sp { width: 18px; height: 18px; border-radius: 4px; background: rgba(17,32,51,.09); }
 .sp.right { background: #6FB558; } .sp.cold { background: #7FB6DD; } .sp.warm { background: #E9B93F; }
 .empty { margin: 0 0 18px; color:#62728A; }
+.data-credit {
+  grid-column: 1 / -1; padding: 2px 4px 16px; text-align:center;
+  color: rgba(255,255,255,.68); font-size:11.5px; line-height:1.5;
+}
+.data-credit a { color:inherit; text-underline-offset:3px; }
+.data-credit a:hover { color:#FFFFFF; }
 .calibration-head { align-items: flex-start; }
 .calibration-copy { margin: 8px 0 0; color:#62728A; line-height:1.45; max-width:560px; }
 .personalization-summary {

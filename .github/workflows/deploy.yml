@@ -37,6 +37,9 @@ jobs:
       - name: Run regression checks
         run: npm run check:regressions
 
+      - name: Run model unit tests
+        run: npm run test
+
       - name: Build site
         run: npm run build
         env:

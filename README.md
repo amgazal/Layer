@@ -13,7 +13,7 @@ The background is selected from Open-Meteo's **current live weather code** each 
 
 The outing planner still changes the clothing recommendation for a future departure, but it does not overwrite the live background. This keeps the page visually grounded in what is happening on campus now.
 
-The scene files are preloaded and use `import.meta.env.BASE_URL`, so they work both locally and at `https://amgazal.github.io/weather/`.
+The scene files are preloaded and use `import.meta.env.BASE_URL`, so they work both locally and at `https://amgazal.github.io/Layer/`.
 
 ## Run locally
 
@@ -94,3 +94,14 @@ Layer combines current, 15-minute, and hourly Open-Meteo data. The 15-minute fee
 ## Live rain footage
 
 When Layer detects live rain, it replaces the synthetic CSS streaks with a muted looping H.264 rain clip. The static rainy image remains available as a poster and accessibility fallback.
+
+
+## Final rain-detection hardening
+
+Layer now evaluates measured rain before dry cloud labels, so a positive 15-minute
+precipitation signal cannot be hidden by an `Overcast` weather code. A conservative
+five-point campus rain probe also catches narrow showers that one forecast grid cell
+may miss. Pure weather-classification tests live in `src/lib/weather.test.js`.
+
+The interface labels the official apparent temperature as **Feels like**, shows whether
+data is live or cached, and credits Open-Meteo at the bottom of the page.
