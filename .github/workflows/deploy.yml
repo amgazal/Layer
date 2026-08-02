@@ -48,6 +48,8 @@ jobs:
           # If unset, the build still succeeds and the app runs local-only.
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # Optional: comma list, e.g. "google,cornell". Blank = email-only sign-in.
+          VITE_AUTH_PROVIDERS: ${{ vars.VITE_AUTH_PROVIDERS }}
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

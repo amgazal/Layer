@@ -3,13 +3,13 @@
     "filename": "clear.webp",
     "width": 941,
     "height": 1672,
-    "bytes": 248364
+    "bytes": 273014
   },
   "cloudy": {
     "filename": "cloudy.webp",
     "width": 941,
     "height": 1672,
-    "bytes": 196486
+    "bytes": 115728
   },
   "rain": {
     "filename": "rain.webp",
@@ -22,5 +22,11 @@
     "width": 941,
     "height": 1672,
     "bytes": 313170
+  },
+  "clear-night": {
+    "filename": "clear-night.webp",
+    "width": 893,
+    "height": 1130,
+    "bytes": 14726
   }
 }

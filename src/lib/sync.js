@@ -1,4 +1,6 @@
-import { supabase, cloudEnabled } from "./supabase";
+import {
+  supabase, cloudEnabled, authRedirectUrl, providerEnabled, CORNELL_DOMAIN,
+} from "./supabase";
 
 /**
  * Local-first sync layer.
@@ -154,41 +156,59 @@ export async function pullModel() {
   }
 }
 
+async function uploadPendingModel() {
+  pushTimer = null;
+  if (!cloudAllowed()) { pendingModel = null; return; }
+
+  const snapshot = pendingModel;
+  pendingModel = null;
+  if (!snapshot) return;
+
+  try {
+    const user = await ensureAuth();
+    if (!user || !cloudAllowed()) return;
+    const { error } = await supabase.from("model_state").upsert(
+      {
+        user_id: user.id,
+        model: snapshot.model,
+        observations: snapshot.observations,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" },
+    );
+    if (error) throw error;
+    markNet("active");
+  } catch (error) {
+    console.warn("[sync] model push failed:", error?.message || error);
+    markNet("unavailable");
+    // Keep the snapshot so the next push or page-hide flush can retry it.
+    if (!pendingModel) pendingModel = snapshot;
+  }
+}
+
 export function pushModel(model, observations) {
   if (!cloudEnabled || !cloudAllowed()) return;
   pendingModel = { model, observations };
   clearTimeout(pushTimer);
+  pushTimer = setTimeout(uploadPendingModel, 800);
+}
 
-  pushTimer = setTimeout(async () => {
-    pushTimer = null;
-    if (!cloudAllowed()) {
-      pendingModel = null;
-      return;
-    }
+/**
+ * Force any debounced calibration write to go out now. Called when the page is
+ * hidden or unloaded so a rating made immediately before closing the tab is not
+ * lost with the 800 ms debounce still pending.
+ */
+export function flushPendingModel() {
+  if (!cloudEnabled || !cloudAllowed() || !pendingModel) return;
+  clearTimeout(pushTimer);
+  uploadPendingModel();
+}
 
-    const snapshot = pendingModel;
-    pendingModel = null;
-    if (!snapshot) return;
-
-    try {
-      const user = await ensureAuth();
-      if (!user || !cloudAllowed()) return;
-      const { error } = await supabase.from("model_state").upsert(
-        {
-          user_id: user.id,
-          model: snapshot.model,
-          observations: snapshot.observations,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" },
-      );
-      if (error) throw error;
-      markNet("active");
-    } catch (error) {
-      console.warn("[sync] model push failed:", error?.message || error);
-      markNet("unavailable");
-    }
-  }, 800);
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPendingModel();
+  });
+  window.addEventListener?.("pagehide", flushPendingModel);
 }
 
 export async function pushProfile(profile) {
@@ -241,6 +261,54 @@ export function logEvent(event) {
 }
 
 let flushing = false;
+/**
+ * Automatic delivery.
+ *
+ * Queued feedback previously waited for the next app open or a manual retry, so
+ * a rating made on flaky campus wifi could sit undelivered for days. During a
+ * two-week study every rating is a data point, so delivery is now retried on a
+ * capped exponential backoff and re-attempted whenever the device regains
+ * connectivity or the app returns to the foreground.
+ */
+const RETRY_BASE_MS = 15 * 1000;
+const RETRY_MAX_MS = 10 * 60 * 1000;
+let retryTimer = null;
+let retryAttempt = 0;
+
+function cancelRetry() {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  retryAttempt = 0;
+}
+
+function scheduleRetry() {
+  if (retryTimer || !cloudEnabled || !cloudAllowed()) return;
+  if (readOutbox().length === 0) return;
+  const delay = Math.min(RETRY_BASE_MS * 2 ** retryAttempt, RETRY_MAX_MS);
+  retryAttempt += 1;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    flushOutbox();
+  }, delay);
+}
+
+/** Flush immediately when the device reconnects or the app is refocused. */
+function attachDeliveryTriggers() {
+  if (typeof window === "undefined") return;
+  const attempt = () => {
+    if (!cloudEnabled || !cloudAllowed()) return;
+    if (readOutbox().length === 0) return;
+    cancelRetry();          // a live signal beats waiting out the backoff
+    flushOutbox();
+  };
+  window.addEventListener("online", attempt);
+  window.addEventListener("focus", attempt);
+  window.addEventListener("pageshow", attempt);
+  document.addEventListener?.("visibilitychange", () => {
+    if (document.visibilityState === "visible") attempt();
+  });
+}
+attachDeliveryTriggers();
+
 export async function flushOutbox() {
   if (!cloudEnabled || !cloudAllowed() || flushing) return;
   const batch = readOutbox();
@@ -250,7 +318,7 @@ export async function flushOutbox() {
   let uploaded = false;
   try {
     const user = await ensureAuth();
-    if (!user || !cloudAllowed()) return;
+    if (!user || !cloudAllowed()) { if (user === null) scheduleRetry(); return; }
 
     const rows = batch.map((event) => ({ user_id: user.id, ...event }));
     const { error } = await supabase
@@ -264,10 +332,12 @@ export async function flushOutbox() {
     const latest = readOutbox();
     writeOutbox(latest.filter((event) => !uploadedIds.has(event.client_event_id)));
     uploaded = true;
+    cancelRetry();          // delivery succeeded: reset the backoff
     markNet("active");
   } catch (error) {
     console.warn("[sync] event upload failed:", error?.message || error);
     markNet("unavailable");
+    scheduleRetry();        // keep trying in the background
   } finally {
     flushing = false;
     if (uploaded && cloudAllowed() && readOutbox().length > 0) {
@@ -339,8 +409,9 @@ export async function resetPersonalizationCloud(emptyModel) {
   }
 }
 
-/* ── account upgrade (kept behind a feature flag in Layer.jsx) ─────── */
-let authInfo = { status: "none", email: null };
+/* ── account identity ───────────────────────────────────────────────── */
+// status: none | anonymous | permanent
+let authInfo = { status: "none", email: null, provider: null, signedInAt: 0 };
 const authListeners = new Set();
 
 export function currentAuth() { return authInfo; }
@@ -355,18 +426,24 @@ function setAuth(next) {
 }
 
 if (cloudEnabled) {
-  supabase.auth.onAuthStateChange((_event, session) => {
+  supabase.auth.onAuthStateChange((event, session) => {
     const user = session?.user;
     if (!user) {
       authPromise = null;
-      setAuth({ status: "none", email: null });
+      setAuth({ status: "none", email: null, provider: null, signedInAt: 0 });
       return;
     }
 
     const permanent = user.is_anonymous === false;
+    const provider = user.app_metadata?.provider ?? (user.email ? "email" : null);
     setAuth({
       status: permanent ? "permanent" : "anonymous",
       email: user.email ?? null,
+      provider: permanent ? provider : null,
+      // A fresh SIGNED_IN on a permanent account means "bring my profile here",
+      // which the app uses to adopt the cloud model even if this device has
+      // more local observations.
+      signedInAt: permanent && event === "SIGNED_IN" ? Date.now() : authInfo.signedInAt,
     });
 
     if (permanent) {
@@ -378,22 +455,120 @@ if (cloudEnabled) {
   });
 }
 
-/**
- * Links an email identity to the current anonymous user. Supabase requires
- * manual identity linking to be enabled in the project before using this.
- * Cross-device sign-in/merge UI is intentionally not exposed yet.
+/* ── sign-in / account linking ──────────────────────────────────────
+ * Two different intentions, and conflating them loses data:
+ *
+ *   LINK  — "save the profile I already built here." The user is anonymous,
+ *           so we attach an identity to the SAME user id and every existing
+ *           model_state / events row carries over untouched.
+ *
+ *   SIGN IN — "I already have a profile, put it on this device." This starts a
+ *           new session for the existing account and the app then adopts the
+ *           cloud model.
+ *
+ * Linking fails when that identity already belongs to another account, which is
+ * exactly the "second device" case — so we fall back to signing in.
  */
-export async function upgradeWithEmail(email) {
-  if (!cloudEnabled || !cloudAllowed()) {
-    return { ok: false, error: "Cloud backup is turned off." };
+
+export function availableProviders() {
+  if (!cloudEnabled) return { email: false, google: false, apple: false, cornell: false };
+  return { email: true, ...providerEnabled };
+}
+
+function oauthOptions(provider, { cornell = false } = {}) {
+  const options = { redirectTo: authRedirectUrl() };
+  if (cornell && provider === "google") {
+    // Domain hint so Cornell users land on the right account chooser. This is a
+    // hint, not enforcement — see PILOT_LAUNCH.md.
+    options.queryParams = { hd: CORNELL_DOMAIN, prompt: "select_account" };
   }
+  return options;
+}
+
+/**
+ * Start a provider flow. Redirects the browser, so nothing after this resolves
+ * in the normal case.
+ * @param provider "google" | "apple"
+ * @param mode     "link" (save current anonymous profile) | "signin"
+ */
+export async function startProviderAuth(provider, { mode = "link", cornell = false } = {}) {
+  if (!cloudEnabled) return { ok: false, error: "Cloud sync is not configured." };
+  if (!cloudAllowed()) return { ok: false, error: "Turn on cloud sync first." };
+
+  const options = oauthOptions(provider, { cornell });
   try {
-    const user = await ensureAuth();
-    if (!user) return { ok: false, error: "Not signed in yet — try again in a moment." };
-    const { error } = await supabase.auth.updateUser({ email });
+    if (mode === "link") {
+      const user = await ensureAuth();
+      // Only anonymous users can link; a permanent user is already saved.
+      if (user?.is_anonymous) {
+        const { error } = await supabase.auth.linkIdentity({ provider, options });
+        if (!error) return { ok: true, mode: "link" };
+        // Identity belongs to an existing account, or manual linking is off.
+        // Signing in is the correct behaviour for a second device.
+        console.warn("[auth] link failed, falling back to sign-in:", error.message);
+      }
+    }
+    const { error } = await supabase.auth.signInWithOAuth({ provider, options });
     if (error) return { ok: false, error: error.message };
+    return { ok: true, mode: "signin" };
+  } catch (error) {
+    return { ok: false, error: error?.message || "Sign-in could not start." };
+  }
+}
+
+/**
+ * Email link. For an anonymous user this attaches the address to the current
+ * profile (data carries over). Otherwise it sends a normal sign-in link.
+ */
+export async function sendEmailLink(email, { mode = "link" } = {}) {
+  if (!cloudEnabled) return { ok: false, error: "Cloud sync is not configured." };
+  if (!cloudAllowed()) return { ok: false, error: "Turn on cloud sync first." };
+  const address = String(email || "").trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
+    return { ok: false, error: "Enter a valid email address." };
+  }
+
+  try {
+    if (mode === "link") {
+      const user = await ensureAuth();
+      if (user?.is_anonymous) {
+        const { error } = await supabase.auth.updateUser(
+          { email: address },
+          { emailRedirectTo: authRedirectUrl() },
+        );
+        if (!error) return { ok: true, mode: "link" };
+        console.warn("[auth] email link failed, falling back to sign-in:", error.message);
+      }
+    }
+    const { error } = await supabase.auth.signInWithOtp({
+      email: address,
+      options: { emailRedirectTo: authRedirectUrl() },
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, mode: "signin" };
+  } catch (error) {
+    return { ok: false, error: error?.message || "Could not send the link." };
+  }
+}
+
+/**
+ * Sign out and immediately return to an anonymous profile so the app keeps
+ * working. Local calibration is untouched; the cloud copy stays on the account.
+ */
+export async function signOutCloud() {
+  if (!cloudEnabled) return { ok: true };
+  try {
+    flushPendingModel();
+    await supabase.auth.signOut();
+    authPromise = null;
+    if (cloudAllowed()) await ensureAuth(); // fresh anonymous identity
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: error?.message || "Something went wrong." };
+    return { ok: false, error: error?.message || "Could not sign out." };
   }
+}
+
+/** Legacy name kept so older call sites keep working. */
+export async function upgradeWithEmail(email) {
+  return sendEmailLink(email, { mode: "link" });
 }

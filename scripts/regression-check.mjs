@@ -2,8 +2,11 @@ import fs from "node:fs";
 
 const source = fs.readFileSync(new URL("../src/Layer.jsx", import.meta.url), "utf8");
 const sync = fs.readFileSync(new URL("../src/lib/sync.js", import.meta.url), "utf8");
+const supa = fs.readFileSync(new URL("../src/lib/supabase.js", import.meta.url), "utf8");
 const weather = fs.readFileSync(new URL("../src/lib/weather.js", import.meta.url), "utf8");
 const schema = fs.readFileSync(new URL("../supabase/schema.sql", import.meta.url), "utf8");
+const indexHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const manifest = JSON.parse(fs.readFileSync(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
 
 const checks = [
   ["weather API requests current is_day", /current=[^`\n]*is_day/.test(source)],
@@ -28,10 +31,10 @@ const checks = [
   ["redundant activity-card planning link is removed", (source.match(/Plan a later time/g) || []).length === 1],
   ["activity choices explain their effect", /Choose one to tailor the recommendation/.test(source)],
   ["noninteractive clothing rows do not show false chevrons", !/className="wear-arrow"/.test(source)],
-  ["profile copy is concise and user-focused", /Layer learns from your ratings/.test(source) && /Turn off cloud sync/.test(source) && /Personalization details/.test(source)],
-  ["cloud sync copy explains the anonymous limitation", /cannot restore this profile on another device yet/.test(source)],
+  ["profile copy is concise and user-focused", /Profile & account/.test(source) && /How Layer has learned/.test(source) && /Turn off cloud sync/.test(source)],
+  ["accounts are available before cloud sync is enabled", /Save or restore your profile/.test(source) && /onEnableCloud={connectCloud}/.test(source) && /prepareCloud/.test(source)],
   ["synthetic rain streak overlay is removed", !/rain-overlay/.test(source) && !/@keyframes rainfall/.test(source)],
-  ["onboarding heading is not duplicated", (source.match(/Cold is personal\./g) || []).length === 1],
+  ["onboarding has one clear value proposition", (source.match(/Dress for how it feels to you\./g) || []).length === 1 && !/className="intro-card"/.test(source)],
   ["balanced outing durations are offered", /"20 min"/.test(source) && /"1 hr"/.test(source) && /"2 hrs"/.test(source) && /"4\+ hrs"/.test(source)],
   ["live rain uses the latest completed interval", /getLatestIndexAtOrBefore/.test(weather) && /rainSignalFromLocation/.test(weather)],
   ["overcast cannot mask measured rain", /Pure condition classifier/.test(weather) && weather.indexOf("if (measured > 0 || codedRain)") < weather.indexOf("if (value === 3)")],
@@ -43,7 +46,7 @@ const checks = [
   ["rain clothing covers the full outing window", /const outingWetLevel = Math\.max/.test(source) && /rainOuterwear/.test(source)],
   ["rainy outfits avoid duplicate outerwear", /isOuterwearLayer/.test(source) && /!isOuterwearLayer\(layer\.label\)/.test(source)],
   ["weather guidance uses plain language", /A wind-blocking jacket will help/.test(source) && /rain could get heavier while you’re out/i.test(source) && !/Rain may strengthen/.test(source)],
-  ["attribution is tucked into profile instead of the hero", /profile-about/.test(source) && !/className="data-credit"/.test(source)],
+  ["weather attribution never clutters the hero", !/className="data-credit"/.test(source)],
   ["feedback is clearly framed as post-outing", /How did the recommendation feel/.test(source) && /Rate it after your outing/.test(source)],
   ["departure time is absolute, not a live offset", /const \[departAt/.test(source) && /laterDepartureOptions/.test(source) && !/startOffset/.test(source)],
   ["temperature display uses actual air temperature now", /departAt == null \? "Temperature" : "Forecast"/.test(source) && /plan\.depart\.actual/.test(source)],
@@ -53,6 +56,22 @@ const checks = [
   ["reset clears synced model, profile, events and pending feedback", /resetPersonalizationCloud/.test(sync) && /from\("events"\)\.delete/.test(sync) && /from\("profiles"\)\.delete/.test(sync) && /observations: 0/.test(sync) && /writeOutbox\(\[\]\)/.test(sync)],
   ["pending reset blocks stale cloud restoration", /hasPendingReset/.test(source) && /if \(hasPendingReset\(\)\) return/.test(source)],
   ["event rows can be deleted by their owner", /create policy "own events delete"/.test(schema)],
+  ["queued feedback retries automatically with backoff", /scheduleRetry/.test(sync) && /RETRY_MAX_MS/.test(sync) && /addEventListener\("online"/.test(sync)],
+  ["pending calibration is flushed when the page hides", /flushPendingModel/.test(sync) && /pagehide/.test(sync)],
+  ["failed model push keeps the snapshot for retry", /if \(!pendingModel\) pendingModel = snapshot/.test(sync)],
+  ["oauth redirects are consumed by the client", /detectSessionInUrl: true/.test(supa) && /authRedirectUrl/.test(supa)],
+  ["sign-in links an anonymous profile before falling back", /linkIdentity/.test(sync) && /signInWithOAuth/.test(sync)],
+  ["only configured providers are offered", /VITE_AUTH_PROVIDERS/.test(supa) && /availableProviders/.test(sync)],
+  ["explicit sign-in adopts the saved cloud profile", /auth\.signedInAt/.test(source) && /adoptedSignIn/.test(source)],
+  ["night clear sky uses its own photograph", /clear-night\.webp/.test(source) && /function sceneSource/.test(source)],
+  ["first rating is gated behind an explicit tap", /readyToRate/.test(source) && /Rate this outing/.test(source)],
+  ["onboarding makes cloud backup an explicit optional choice", /Turn on cloud sync/.test(source) && /const \[allowCloud, setAllowCloud\] = useState\(false\)/.test(source)],
+  ["onboarding privacy copy is accurate for optional accounts", /No account is required/.test(source) && /If you sign in later, your email is stored only/.test(source)],
+  ["onboarding uses one unambiguous primary action", (source.match(/See my recommendation/g) || []).length === 1 && !/className="ob-secondary"/.test(source)],
+  ["profile language changes truthfully after sign-in", /auth\.status === "permanent"/.test(source) && /follow you across devices/.test(source)],
+  ["comfort levels use complete plain-language labels", /const LEVELS = \["None", "Low", "Medium", "High"\]/.test(source)],
+  ["installable app metadata is present", /manifest\.webmanifest/.test(indexHtml) && /apple-mobile-web-app-capable/.test(indexHtml) && manifest.short_name === "Layer"],
+  ["open-meteo attribution is discreet and linked", /data-source-footer/.test(source) && /Weather data by/.test(source) && /open-meteo\.com\//.test(source)],
 ];
 
 let failed = 0;

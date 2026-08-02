@@ -100,12 +100,57 @@ async function main() {
     .insert({ user_id: userA, client_event_id: uuid(), ...sampleEvent(uuid()), activity: "airplane" });
   check("constraint rejects activity = 'airplane'", Boolean(badAct), badAct ? "" : "row was accepted!");
 
+  // ── Pilot security hardening (20260802_pilot_security.sql) ───────
+  const userB = bAuth?.user?.id;
+
+  // Spoofed ownership: B posts an event claiming to be A.
+  const spoofId = uuid();
+  const { error: spoofErr } = await B.from("events")
+    .insert({ user_id: userA, client_event_id: spoofId, ...sampleEvent(spoofId) });
+  let spoofLanded = false;
+  if (!spoofErr) {
+    // If the insert was allowed, the owner trigger must have rewritten it to B.
+    const { data: spoofRow } = await B.from("events").select("user_id").eq("client_event_id", spoofId).maybeSingle();
+    spoofLanded = spoofRow?.user_id === userA;
+  }
+  check("cross-user write cannot forge ownership", !spoofLanded,
+    spoofLanded ? "event was stored under the other user!" : "");
+
+  // Oversized calibration payload must be rejected.
+  const huge = { v: 5, seeded: true, regime: model.regime, factors: model.factors, junk: "x".repeat(200000) };
+  const { error: hugeErr } = await A.from("model_state")
+    .upsert({ user_id: userA, model: huge, observations: 3 }, { onConflict: "user_id" });
+  check("oversized model payload rejected", Boolean(hugeErr), hugeErr ? "" : "200 KB payload was accepted!");
+
+  // Model must be a JSON object, not a scalar.
+  const { error: shapeErr } = await A.from("model_state")
+    .upsert({ user_id: userA, model: 42, observations: 1 }, { onConflict: "user_id" });
+  check("non-object model payload rejected", Boolean(shapeErr), shapeErr ? "" : "scalar model was accepted!");
+
+  // Events are append-only: an update must not alter a stored outcome.
+  const { error: updErr } = await A.from("events").update({ outcome: "warm" }).eq("client_event_id", evId);
+  const { data: afterUpd } = await A.from("events").select("outcome").eq("client_event_id", evId).maybeSingle();
+  check("stored events cannot be edited", Boolean(updErr) || afterUpd?.outcome === "cold",
+    `outcome is now ${afterUpd?.outcome}`);
+
+  // Server-side timestamp: created_at must be server time, not a client value.
+  const { data: tsRow } = await A.from("events").select("created_at").eq("client_event_id", evId).maybeSingle();
+  const skewMinutes = tsRow?.created_at ? Math.abs(Date.now() - new Date(tsRow.created_at).getTime()) / 60000 : Infinity;
+  check("created_at is server-generated", skewMinutes < 10, `off by ${Math.round(skewMinutes)} min`);
+
+  // Privacy reset: a user can delete their own rows.
+  const { error: delErr } = await A.from("events").delete().eq("client_event_id", evId);
+  const { count: afterDel } = await A.from("events")
+    .select("*", { count: "exact", head: true }).eq("client_event_id", evId);
+  check("user can delete their own events (privacy reset)", !delErr && afterDel === 0);
+
   // ── Summary ─────────────────────────────────────────────────────
   console.log("─".repeat(40));
   console.log(`${failed === 0 ? "✓ ALL PASSED" : "✗ FAILURES"}  ·  ${passed} passed, ${failed} failed\n`);
   console.log("Cleanup (run in the SQL editor if you want the test rows gone):");
-  console.log(`  delete from public.events where user_id in ('${userA}', '${bAuth?.user?.id ?? ""}');`);
-  console.log(`  delete from public.model_state where user_id = '${userA}';\n`);
+  console.log(`  delete from public.events where user_id in ('${userA}', '${userB ?? ""}');`);
+  console.log(`  delete from public.model_state where user_id = '${userA}';`);
+  console.log(`  delete from public.profiles where id in ('${userA}', '${userB ?? ""}');\n`);
 
   process.exit(failed === 0 ? 0 : 1);
 }

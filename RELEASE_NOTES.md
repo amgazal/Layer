@@ -1,5 +1,21 @@
 # Layer backend final — release notes
 
+
+## First-impression and account UX pass
+
+- Rebuilt onboarding around one value proposition and a compact three-step preview.
+- Replaced generic clear/overcast photos with approved Cornell/Ithaca scenic images.
+- Made cloud sync an explicit optional choice that starts off.
+- Corrected anonymous-sync wording so it no longer promises recovery after browser data is cleared.
+- Removed competing first-run actions; the single primary action is **See my recommendation**.
+- Made passwordless account saving and restoration available directly from **Profile & account**, even before cloud sync is enabled.
+- Added truthful signed-in versus anonymous profile copy and a small account-status indicator.
+- Aligned the Comfort factors scale to its four meter segments and expanded `Medium` instead of using `Mod`.
+- Added a branded web app manifest, favicon, and Apple touch icon.
+- Restored required Open-Meteo attribution as a compact bottom-of-page footer instead of a first-screen note.
+- Added regression coverage for onboarding consent, account availability, truthful copy, and mobile app metadata.
+
+
 ## Frontend fixes merged
 - Automatic night mode uses Open-Meteo `is_day`.
 - Night scenes are dimmed and desaturated for readability.
@@ -18,6 +34,27 @@
 - Existing `client_event_id` values are backfilled and made non-null.
 - More database constraints protect research-data quality.
 - The incomplete email-account upgrade UI is feature-flagged off until sign-in and model merging are finished.
+
+## Accounts, backgrounds, and first-run (pilot build)
+- New photography: dedicated day clear sky, a real **night sky** (previously a
+  dimmed daytime photo), and a new overcast scene. All re-encoded to WebP —
+  night 15 KB and overcast 13 KB, down from ~250 KB / ~196 KB.
+- Sign-in added: email links, Google, "Continue with Cornell" (Google with a
+  cornell.edu domain hint), and Apple. Buttons appear only for providers listed
+  in `VITE_AUTH_PROVIDERS`, so testers never meet a dead button.
+- Fixed `detectSessionInUrl: false`, which would have silently dropped every
+  OAuth session on return from a provider. PKCE flow enabled.
+- Saving a profile links an identity to the **same** user id, so ratings carry
+  over with no migration. On a second device linking fails by design and the
+  app falls back to signing in, then adopts the saved cloud profile.
+- First run: the rating buttons now sit behind one explicit "I've been outside"
+  tap, so a new tester cannot rate before an outing and pollute their model or
+  the study data. Added a dismissible three-step explainer and labelled the
+  day-one personal shift as coming from setup answers.
+- Removed the in-app Open-Meteo credit; attribution retained in README to
+  satisfy the CC BY 4.0 licence.
+- Removed the superseded `AccountUpgrade` component, which called a function no
+  longer imported and would have thrown had its feature flag been enabled.
 
 ## Field fixes (from live testing)
 - Rain intensity is now read from actual measured rainfall (mm), not just the

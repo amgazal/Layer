@@ -2,6 +2,22 @@
 
 Layer is a Cornell campus-focused weather application that converts forecast data into personalized comfort and clothing recommendations.
 
+
+## Current first-impression release
+
+This release uses Cornell/Ithaca-specific clear and overcast scenes and tightens the experience around one path:
+
+1. Complete a two-question, 30-second setup.
+2. See the current temperature beside Layer's personalized **For you** value.
+3. Choose an activity and outing time.
+4. Try the recommendation and rate it afterward.
+5. Optionally save the profile with passwordless email or a configured provider.
+
+Cloud sync is optional and off by default. Anonymous cloud sync mirrors the current browser profile; signing in is what makes the profile recoverable on another device. Account, storage, cloud status, learning details, and reset controls live together under **Profile & account**.
+
+The app now includes home-screen metadata and branded icons for a more app-like mobile launch. The detailed design review is in `FIRST_IMPRESSION_UX_REVIEW.md`.
+
+
 ## Live scenic backgrounds
 
 The background is selected from Open-Meteo's **current live weather code** each time weather is loaded or refreshed:
@@ -47,7 +63,7 @@ This prevents the clothing/activity cards from appearing above the main weather 
 
 ## Current-time and personalization update
 
-- The header now shows the device's live local time and updates every 30 seconds.
+- The header shows the device's live local time, updates every 10 seconds, and refreshes immediately when the app regains focus.
 - “Leaving now” displays the actual current-to-end time window instead of rounded hourly forecast timestamps.
 - The app uses current Open-Meteo conditions for an outing beginning now, while still using hourly data for the outing range.
 - Personalization is explained briefly by default; technical cold/mild/warm adjustments are available under “View learning details.”
@@ -83,7 +99,7 @@ This build fixes the comfort-threat level bars on narrow screens. The meter now 
 - Cloud sync is explicit opt-in; a new visitor is not anonymously signed in before choosing.
 - Failed authentication can retry without a reload.
 - The feedback outbox removes only the batch that actually uploaded, preventing an overlapping event from being lost.
-- Account-upgrade UI is feature-flagged off until cross-device sign-in and model merging are complete.
+- Optional passwordless account saving is available from the profile panel; the app still works without an account.
 
 
 ## Live rain accuracy
@@ -103,4 +119,9 @@ precipitation signal cannot be hidden by an `Overcast` weather code. A conservat
 five-point campus rain probe also catches narrow showers that one forecast grid cell
 may miss. Pure weather-classification tests live in `src/lib/weather.test.js`.
 
-The main comparison shows the actual **Temperature** now (or **Forecast** for a later departure) beside Layer’s personalized **For you** value. The standard feels-like temperature remains part of the explanation under **Why this outfit?**. Freshness stays visible beside the outing summary, while Open-Meteo attribution is kept in the profile rather than interrupting the weather screen.
+The main comparison shows the actual **Temperature** now (or **Forecast** for a later departure) beside Layer’s personalized **For you** value. The standard feels-like temperature remains part of the explanation under **Why this outfit?**. Freshness stays visible beside the outing summary. A compact attribution link sits at the very bottom of the page, away from the first-screen weather experience.
+
+## Attribution
+
+Weather data by [Open-Meteo](https://open-meteo.com/), used under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The large in-app credit was removed from the profile panel. A compact linked credit remains at the bottom of the app, and full attribution is retained here.
