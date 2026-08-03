@@ -16,6 +16,7 @@ import {
   rainIntensityFromRate, rainSignalFromLocation,
   rateFrom15MinuteTotal, wmoRainSeverity,
 } from "./lib/weather";
+import { visibleTemperatureShift, temperatureShiftLabel } from "./lib/presentation";
 import {
   ensureAuth, pullModel, pushModel, pushProfile, logEvent,
   flushOutbox, setCloudPref, subscribeCloud, retryCloud,
@@ -523,7 +524,7 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
     if (res.ok) {
       setStatus({
         kind: "sent",
-        text: `Check ${email.trim()} and open the link on this device. After it is saved, use the same email on your other devices.`,
+        text: `Check ${email.trim()} and open the link on this device. Once confirmed, Layer will sync this profile automatically.`,
       });
       setMode(null);
     } else {
@@ -535,7 +536,7 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
     setBusy("out");
     await signOutCloud();
     setBusy(null);
-    setStatus({ kind: "ok", text: "Signed out. Layer still works with a new anonymous profile on this device." });
+    setStatus({ kind: "ok", text: "Signed out. This device will keep working with a separate local profile." });
   };
 
   if (!cloudConfigured) {
@@ -558,7 +559,7 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
             <small>{auth.email || (auth.provider ? `Signed in with ${auth.provider}` : "Signed in")}</small>
           </div>
         </div>
-        <p className="account-copy">Use the same account on another device to load your Layer profile.</p>
+        <p className="account-copy">Your ratings and settings sync automatically. Use the same account to restore them on another device.</p>
         <button type="button" className="profile-secondary account-out" disabled={busy === "out"} onClick={doSignOut}>
           <LogOut size={15} strokeWidth={2.2} /> {busy === "out" ? "Signing out…" : "Sign out"}
         </button>
@@ -569,11 +570,11 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
 
   return (
     <div className="account-block">
-      <div className="account-head"><ShieldCheck size={17} strokeWidth={2.2} /><span>Save or restore your profile</span></div>
+      <div className="account-head"><ShieldCheck size={17} strokeWidth={2.2} /><span>Sign in to sync your profile</span></div>
       <p className="account-copy">
         {ratingCount > 0
-          ? `Keep your ${ratingCount} rating${ratingCount === 1 ? "" : "s"} if you change devices or clear this browser.`
-          : "Sign in once to use the same profile on your other devices."}
+          ? `Save your ${ratingCount} rating${ratingCount === 1 ? "" : "s"} and personalization, then restore them on another device.`
+          : "Signing in saves this profile to your account and makes it available on your other devices."}
       </p>
 
       <div className="account-providers">
@@ -623,7 +624,7 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
 
       {status && <p className={`account-status ${status.kind}`} role={status.kind === "error" ? "alert" : "status"} aria-live="polite">{status.text}</p>}
       <p className="account-fine">
-        No password required. Signing in turns on sync; you can keep using Layer without an account.
+        No password required. Signing in turns on account sync automatically. You can keep using Layer on this device without an account.
       </p>
     </div>
   );
@@ -699,8 +700,8 @@ function Onboarding({ onDone, cloudAvailable = true }) {
           <label className={`ob-backup ${allowCloud ? "on" : ""}`}>
             <Cloud size={20} strokeWidth={2.1} aria-hidden="true" />
             <span>
-              <strong>Turn on cloud sync</strong>
-              <small>Optional. Mirrors your profile now; add an account later for recovery.</small>
+              <strong>Use anonymous cloud sync</strong>
+              <small>Optional. Mirrors this browser profile; sign in later to restore it on other devices.</small>
             </span>
             <input
               type="checkbox"
@@ -713,7 +714,7 @@ function Onboarding({ onDone, cloudAvailable = true }) {
 
         <div className="ob-privacy">
           No account is required. Layer uses Cornell’s fixed campus location—not your phone’s GPS.
-          If you sign in later, your email is stored only to restore your profile on another device.
+          Signing in automatically turns on account sync so your profile can be restored on another device.
         </div>
 
         <button
@@ -726,8 +727,8 @@ function Onboarding({ onDone, cloudAvailable = true }) {
         </button>
         <p className="ob-note">
           {cloudAvailable && allowCloud
-            ? "Cloud sync is on. Add an account later to restore this profile elsewhere."
-            : "Your profile will stay on this device. You can turn on sync later in Profile."}
+            ? "Anonymous sync is on. Add an account later for cross-device recovery."
+            : "Your profile will stay on this device. You can sign in or enable anonymous sync later in Profile."}
         </p>
       </div>
     </div>
@@ -1405,12 +1406,15 @@ export default function Layer() {
       isDay,
     });
     const personalShift = Math.round(eff - base);
+    const displayShift = visibleTemperatureShift(plan.depart.actual, effective);
     const tempDelta = Math.round(plan.endApparent - plan.depart.apparent);
     const whyLines = [];
-    if (personalShift !== 0) {
-      whyLines.push(`The official feels-like temperature is ${base}°. Your profile shifts the recommendation to ${effective}°.`);
+    const airTemperature = Math.round(plan.depart.actual);
+    const officialFeelsLike = Math.round(base);
+    if (airTemperature === officialFeelsLike && officialFeelsLike === effective) {
+      whyLines.push(`The air temperature and your dress-for temperature are both ${effective}°.`);
     } else {
-      whyLines.push(`The official feels-like temperature is ${base}° before activity and outing adjustments.`);
+      whyLines.push(`Air temperature is ${airTemperature}°. The official feels-like reading is ${officialFeelsLike}°, and Layer recommends dressing for ${effective}°.`);
     }
 
     if (activity === "waiting") {
@@ -1440,6 +1444,7 @@ export default function Layer() {
       threats,
       extras: extrasFor(threats, cond),
       personalShift,
+      displayShift,
       rangeText: `${plan.minApparent}°–${plan.maxApparent}°`,
       tempDelta,
       significantTempChange: Math.abs(tempDelta) >= 6,
@@ -1514,7 +1519,7 @@ export default function Layer() {
     setAskBlame(null);
     setToast(
       followed === "no"
-        ? "Logged, but I did not retrain the model because you did not follow the recommendation."
+        ? "Thanks — your feedback was saved."
         : direction === 0
           ? "Locked in — I’ll keep reading days like this similarly."
           : blameKey && blameKey !== "cold"
@@ -1660,9 +1665,9 @@ export default function Layer() {
                 <span className="read-k">For you</span>
                 <span className="read-v">{result.effective}°</span>
               </div>
-              {result.personalShift !== 0 && (
+              {result.displayShift !== 0 && (
                 <span className="shift">
-                  {Math.abs(result.personalShift)}° {result.personalShift < 0 ? "cooler" : "warmer"} for you
+                  {temperatureShiftLabel(result.displayShift)}
                   {ratingCount === 0 && <em className="shift-src"> · from your setup</em>}
                 </span>
               )}
@@ -1707,7 +1712,7 @@ export default function Layer() {
             )}
             <div className="planner-summary">
               <span><Clock3 size={14} strokeWidth={2.2} /> {`${formatTime(outingStart)}–${formatTime(outingEnd)}`}</span>
-              <span>Official feels like {result?.rangeText || "--"}</span>
+              <span>Feels like {result?.rangeText || "--"}</span>
             </div>
           </aside>
 
@@ -1922,20 +1927,13 @@ export default function Layer() {
                     );
                   })}
                 </div>
-                <div className="explain">Layer learns separate adjustments for cold, mild, and warm days. It can also learn whether wind, wetness, or sun affects you more than average. Feedback only changes the model when you say you followed the recommendation.</div>
+                <div className="explain">Layer learns separate adjustments for cold, mild, and warm days. It can also learn whether wind, wetness, or sun affects you more than average. It learns from ratings for outfits you actually wore.</div>
               </div>
             )}
           </section>
 
 
         </main>
-        <footer className="data-source-footer">
-          Weather data by{" "}
-          <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a>
-          {" · "}
-          <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a>
-          {" · "}adapted for Layer
-        </footer>
       </div>
 
       {profileOpen && typeof document !== "undefined" && createPortal(
@@ -1981,27 +1979,45 @@ export default function Layer() {
               onEnableCloud={connectCloud}
             />
 
-            <div className="profile-section-label">Storage</div>
+            <div className="profile-section-label">Storage & sync</div>
             <div className="profile-storage-list">
               <div className="profile-storage-row profile-storage-compact">
                 <HardDrive size={19} strokeWidth={2.1} />
-                <div><strong>This device</strong><span>Personalization is saved locally.</span></div>
+                <div><strong>Saved on this device</strong><span>Layer keeps working even when you are offline.</span></div>
                 <Check size={18} strokeWidth={2.4} className="profile-ok" />
               </div>
               <div className="profile-storage-row profile-storage-compact">
                 <Cloud size={19} strokeWidth={2.1} />
                 <div>
-                  <strong>{cloudState === "active" ? "Cloud sync on" : cloudState === "connecting" ? "Connecting" : cloudState === "unavailable" ? "Cloud sync needs attention" : cloudState === "local" ? "Cloud sync not configured" : "Cloud sync off"}</strong>
-                  <span>{cloudState === "active" ? "New ratings are synced to this cloud profile." : "Local recommendations keep working."}</span>
+                  <strong>
+                    {auth.status === "permanent"
+                      ? "Synced to your account"
+                      : cloudState === "active"
+                        ? "Anonymous cloud sync on"
+                        : cloudState === "connecting"
+                          ? "Connecting"
+                          : cloudState === "unavailable"
+                            ? "Anonymous sync needs attention"
+                            : cloudState === "local"
+                              ? "Cloud sync not configured"
+                              : "Device-only profile"}
+                  </strong>
+                  <span>
+                    {auth.status === "permanent"
+                      ? "Your ratings and settings can be restored on another device."
+                      : cloudState === "active"
+                        ? "This browser profile is mirrored online. Sign in for cross-device recovery."
+                        : "Sign in to sync and restore this profile on other devices."}
+                  </span>
                 </div>
-                {cloudState === "active" && <Check size={18} strokeWidth={2.4} className="profile-ok" />}
+                {(auth.status === "permanent" || cloudState === "active") && <Check size={18} strokeWidth={2.4} className="profile-ok" />}
               </div>
             </div>
 
             {!resetConfirmOpen ? (
               <>
                 <div className="profile-actions">
-                  {cloudState !== "local" && (
+                  {auth.status !== "permanent" && cloudState !== "local" && (
                     <button
                       type="button"
                       className="profile-primary"
@@ -2011,10 +2027,10 @@ export default function Layer() {
                       {cloudActionBusy || cloudState === "connecting"
                         ? "Connecting…"
                         : cloudState === "active"
-                          ? "Turn off cloud sync"
+                          ? "Turn off anonymous sync"
                           : cloudState === "unavailable"
-                            ? "Retry cloud sync"
-                            : "Enable cloud sync"}
+                            ? "Retry anonymous sync"
+                            : "Enable anonymous sync"}
                     </button>
                   )}
                   <button type="button" className="profile-secondary" onClick={openPersonalization}>
@@ -2046,6 +2062,15 @@ export default function Layer() {
                 </div>
               </div>
             )}
+
+            <div className="profile-about">
+              <strong>About Layer</strong>
+              <span>
+                Weather data from <a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a>
+                {" under "}<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a>.
+                Layer adapts it into personalized outfit guidance.
+              </span>
+            </div>
           </section>
         </div>
       , document.body)}
@@ -2061,8 +2086,12 @@ const css = `
   --muted: rgba(242, 246, 255, 0.84);
   --muted-dark: #6c7a90;
   min-height: 100vh;
+  width: 100%;
+  max-width: 100%;
   position: relative;
-  overflow-x: hidden;
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
   background: #142236;
   font-family: 'Instrument Sans', system-ui, sans-serif;
   color: white;
@@ -2163,7 +2192,8 @@ const css = `
 .app-shell {
   position: relative;
   z-index: 1;
-  width: min(1120px, calc(100vw - 32px));
+  width: min(1120px, calc(100% - 32px));
+  max-width: 100%;
   margin: 0 auto;
   padding: 28px 0 42px;
 }
@@ -2219,6 +2249,7 @@ const css = `
 .read-arrow { color: rgba(255,255,255,.72); margin-bottom: 14px; }
 .read-you .read-v { color: #F6C35C; }
 .shift {
+  max-width: 100%; overflow-wrap: anywhere;
   margin-left: 10px; margin-bottom: 14px; font-family:'DM Mono',monospace; font-size: 12px; color: #FFE5A2;
   padding: 12px 16px; border-radius: 16px; background: rgba(240, 176, 54, .28); border: 1px solid rgba(255, 213, 124, .22);
 }
@@ -2586,7 +2617,7 @@ const css = `
 .profile-overlay {
   --ink: #112033;
   --panel-border: #D9E2EC;
-  position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh;
+  position: fixed; inset: 0; width: 100%; height: 100vh; height: 100dvh;
   z-index: 2147483000; isolation: isolate; display: flex; align-items: center; justify-content: center;
   padding: 24px; background: rgba(5, 13, 24, .62);
   -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
@@ -2689,14 +2720,15 @@ const css = `
 .profile-danger:hover:not(:disabled) { background:#A33D3D; border-color:#A33D3D; }
 .profile-danger:disabled { opacity:.62; cursor:default; }
 
-.data-source-footer {
-  margin:26px auto 0; padding:10px 14px; width:max-content; max-width:100%;
-  border-radius:999px; background:rgba(7,18,31,.38); color:rgba(240,245,252,.68);
-  font-size:10.5px; line-height:1.4; text-align:center;
-  -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
+.profile-about {
+  margin-top:18px; padding-top:14px; border-top:1px solid #E2E8F0;
+  display:grid; gap:4px; color:#7A8799; font-size:11.5px; line-height:1.5;
 }
-.data-source-footer a { color:rgba(255,255,255,.82); text-underline-offset:2px; }
-.data-source-footer a:hover { color:#FFFFFF; }
+.profile-about strong {
+  color:#526178; font:700 10.5px 'DM Mono',monospace; letter-spacing:.08em; text-transform:uppercase;
+}
+.profile-about a { color:#526D91; text-underline-offset:2px; }
+.profile-about a:hover { color:#263A52; }
 .loading-screen {
   min-height: 100vh;
   display: grid;
@@ -2793,7 +2825,8 @@ label:has(input:focus-visible) {
   .weather-rain .scene-image { background-position: 50% 59%; }
   .rain-video { object-position: 58% center; }
   .weather-snow .scene-image { background-position: 54% 56%; }
-  .app-shell { width: min(100vw - 18px, 100%); padding-top: 14px; }
+  .app-shell { width: calc(100% - 18px); max-width: calc(100% - 18px); padding-top: 14px; }
+  .scene-image, .rain-video { transform: none; }
   .content-grid { gap: 14px; }
   .topbar { margin-bottom: 0; }
   .hero { padding: 18px 10px 14px; }
@@ -2848,7 +2881,6 @@ label:has(input:focus-visible) {
   .ob-opt { min-height:0; }
   .ob-backup { align-items:start; }
   .toggle-ui { align-self:center; }
-  .data-source-footer { width:100%; border-radius:16px; font-size:9.5px; }
   .profile-overlay {
     align-items:flex-end; padding: max(8px, env(safe-area-inset-top)) 0 0;
     background: rgba(5,13,24,.72);

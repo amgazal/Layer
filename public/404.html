@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Opening Layer…</title></head>
+  <body>
+    <p>Opening Layer…</p>
+    <script>
+      (() => {
+        const parts = window.location.pathname.split("/").filter(Boolean);
+        const project = parts[0] || "Layer";
+        const destination = new URL(`/${project}/`, window.location.origin);
+        destination.search = window.location.search;
+        destination.hash = window.location.hash;
+        window.location.replace(destination.href);
+      })();
+    </script>
+  </body>
+</html>

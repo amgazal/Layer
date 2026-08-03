@@ -29,11 +29,13 @@ that device and open that link there. This keeps the user's intention clear and
 avoids relying on a link opened in the wrong browser.
 
 **Authentication → URL Configuration**
-- **Site URL**: your deployed URL, e.g. `https://amgazal.github.io/weather/`
-- **Redirect URLs**: add that same URL **and** `http://localhost:5173/` for dev
+- **Site URL**: `https://amgazal.github.io/Layer/`
+- **Redirect URL**: `https://amgazal.github.io/Layer/auth-callback.html`
+- For local testing, also add `http://localhost:5173/auth-callback.html`
 
-This step is required for every provider, including email. If the redirect URL
-does not match exactly, the link bounces the user out.
+This step is required for every provider, including email. The callback URL must
+be in Supabase's redirect allow list or Supabase falls back to the configured
+Site URL.
 
 ## 2. Enable identity linking (needed to *save* an anonymous profile)
 **Authentication → Providers → (settings) → enable manual linking.**
@@ -90,3 +92,18 @@ If a tester trains a profile anonymously on **two** devices and then signs both
 into the same account, one history wins rather than merging. The proper fix is
 rebuilding the model from the central `events` log, which belongs with a fuller
 accounts feature rather than this pilot.
+
+## GitHub Pages email callback (required)
+
+This build uses a real static callback page so email links do not land on a
+GitHub Pages 404. In Supabase, open **Authentication → URL Configuration** and
+set/add:
+
+- Site URL: `https://amgazal.github.io/Layer/`
+- Redirect URL: `https://amgazal.github.io/Layer/auth-callback.html`
+
+For a comparison repository, add its callback too, for example:
+`https://amgazal.github.io/Layer-accounts-ready/auth-callback.html`.
+
+The email link must be opened in the same browser/device where it was requested
+because the app uses Supabase PKCE authentication.

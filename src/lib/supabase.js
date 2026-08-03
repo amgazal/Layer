@@ -32,9 +32,28 @@ export const cloudEnabled = Boolean(supabase);
  * Supabase -> Authentication -> URL Configuration -> Redirect URLs.
  * BASE_URL keeps this correct under a GitHub Pages subpath (e.g. /weather/).
  */
-export function authRedirectUrl() {
+export function appBaseUrl() {
   if (typeof window === "undefined") return undefined;
-  return `${window.location.origin}${import.meta.env.BASE_URL || "/"}`;
+
+  const configured = String(import.meta.env.VITE_AUTH_REDIRECT_URL || "").trim();
+  if (configured) {
+    const url = new URL(configured, window.location.origin);
+    url.search = "";
+    url.hash = "";
+    return url.href.endsWith("/") ? url.href : `${url.href}/`;
+  }
+
+  // A relative Vite base lets the same build work under /Layer/, a comparison
+  // repository, or a custom domain without editing source code.
+  const url = new URL(import.meta.env.BASE_URL || "./", window.location.href);
+  url.search = "";
+  url.hash = "";
+  return url.href.endsWith("/") ? url.href : `${url.href}/`;
+}
+
+export function authRedirectUrl() {
+  const base = appBaseUrl();
+  return base ? new URL("auth-callback.html", base).href : undefined;
 }
 
 /**

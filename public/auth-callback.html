@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#112033" />
+    <title>Signing in to Layer…</title>
+    <style>
+      *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#112033;color:#fff;font-family:system-ui,sans-serif}
+      body{min-height:100vh;display:grid;place-items:center;padding:24px;text-align:center}
+      main{max-width:360px}span{display:inline-block;width:28px;height:28px;border:3px solid rgba(255,255,255,.25);border-top-color:#f2bd4c;border-radius:50%;animation:spin .8s linear infinite}
+      p{color:rgba(255,255,255,.78)}@keyframes spin{to{transform:rotate(360deg)}}
+    </style>
+  </head>
+  <body>
+    <main role="status" aria-live="polite"><span aria-hidden="true"></span><h1>Opening Layer</h1><p>Finishing your sign-in…</p></main>
+    <script>
+      (() => {
+        const destination = new URL("./", window.location.href);
+        destination.search = window.location.search;
+        destination.hash = window.location.hash;
+        window.location.replace(destination.href);
+      })();
+    </script>
+  </body>
+</html>

@@ -6,6 +6,18 @@
   -moz-osx-font-smoothing: grayscale;
 }
 * { box-sizing: border-box; }
-html, body, #root { min-height: 100%; margin: 0; }
-body { min-width: 320px; min-height: 100vh; }
+html, body, #root {
+  min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+}
+body {
+  min-width: 0;
+  min-height: 100vh;
+  touch-action: pan-y;
+}
+img, video { max-width: 100%; }
 button, input, select { font: inherit; }

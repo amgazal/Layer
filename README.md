@@ -13,7 +13,7 @@ This release uses Cornell/Ithaca-specific clear and overcast scenes and tightens
 4. Try the recommendation and rate it afterward.
 5. Optionally save the profile with passwordless email or a configured provider.
 
-Cloud sync is optional and off by default. Anonymous cloud sync mirrors the current browser profile; signing in is what makes the profile recoverable on another device. Account, storage, cloud status, learning details, and reset controls live together under **Profile & account**.
+Layer is local-first. It works without an account and saves personalization on the current device. Optional **anonymous cloud sync** mirrors that browser profile online but cannot recover it after the browser session is lost. Signing in with email or a configured provider automatically turns on **account sync**, which makes the profile recoverable on another device. Account, storage, sync status, learning details, and reset controls live together under **Profile & account**.
 
 The app now includes home-screen metadata and branded icons for a more app-like mobile launch. The detailed design review is in `FIRST_IMPRESSION_UX_REVIEW.md`.
 
@@ -29,7 +29,16 @@ The background is selected from Open-Meteo's **current live weather code** each 
 
 The outing planner still changes the clothing recommendation for a future departure, but it does not overwrite the live background. This keeps the page visually grounded in what is happening on campus now.
 
-The scene files are preloaded and use `import.meta.env.BASE_URL`, so they work both locally and at `https://amgazal.github.io/Layer/`.
+The project uses a relative Vite base, so the same source build works locally, at `https://amgazal.github.io/Layer/`, or in a comparison repository without changing asset paths.
+
+
+## Pilot fixes — August 3, 2026
+
+- The warmer/cooler badge now uses the exact arithmetic shown in the hero. If **Temperature** and **For you** are both 69°, the badge is hidden.
+- The explanation panel separates air temperature, official feels-like temperature, and Layer's dress-for recommendation.
+- Mobile horizontal drift is blocked with document-level overflow and pan-only touch handling.
+- Email links return through the real static file `auth-callback.html`, avoiding GitHub Pages route 404s.
+- Before testing email sign-in, add `https://amgazal.github.io/Layer/auth-callback.html` to Supabase **Authentication → URL Configuration → Redirect URLs**.
 
 ## Run locally
 
@@ -78,7 +87,7 @@ This prevents the clothing/activity cards from appearing above the main weather 
 
 ## Mobile comfort-meter fix
 
-This build fixes the comfort-threat level bars on narrow screens. The meter now uses a four-column CSS grid with an explicit full width, so the None / Low / Mod / High segments remain visible on phones. This package is configured for `/Layer/`.
+This build fixes the comfort-threat level bars on narrow screens. The meter uses a four-column CSS grid with an explicit full width, so the None / Low / Medium / High segments remain visible on phones.
 
 
 ## Night and inclusivity update
@@ -119,9 +128,9 @@ precipitation signal cannot be hidden by an `Overcast` weather code. A conservat
 five-point campus rain probe also catches narrow showers that one forecast grid cell
 may miss. Pure weather-classification tests live in `src/lib/weather.test.js`.
 
-The main comparison shows the actual **Temperature** now (or **Forecast** for a later departure) beside Layer’s personalized **For you** value. The standard feels-like temperature remains part of the explanation under **Why this outfit?**. Freshness stays visible beside the outing summary. A compact attribution link sits at the very bottom of the page, away from the first-screen weather experience.
+The main comparison shows the actual **Temperature** now (or **Forecast** for a later departure) beside Layer’s personalized **For you** value. The standard feels-like range is summarized in the outing planner and explained under **Why this outfit?**. Freshness stays visible beside the outing summary. Weather attribution is kept inside **Profile & account → About Layer**, away from the first-screen weather experience.
 
 ## Attribution
 
-Weather data by [Open-Meteo](https://open-meteo.com/), used under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The large in-app credit was removed from the profile panel. A compact linked credit remains at the bottom of the app, and full attribution is retained here.
+Weather data from [Open-Meteo](https://open-meteo.com/), used under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Layer adapts the data into personalized outfit guidance. Linked attribution appears in **Profile & account → About Layer**, with the full project attribution retained here.
