@@ -31,34 +31,31 @@
     </main>
     <script>
       (() => {
-        const CHANNEL = "layer-auth-handoff-v1";
-        const STORAGE_KEY = "layer:auth-handoff";
+        const CHANNEL = "layer-auth-handoff-v2";
+        const STORAGE_KEY = "layer:auth-code-handoff-v2";
         const current = new URL(window.location.href);
-        const handoff = current.searchParams.get("layer_handoff") === "1";
-        const nonce = current.searchParams.get("layer_nonce") || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+        const code = current.searchParams.get("code");
+        const nonce = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 
-        function rootDestination(url) {
-          const dest = new URL("./", url);
-          const params = new URLSearchParams(url.search);
+        function appDestination() {
+          const dest = new URL("./", current);
+          const params = new URLSearchParams(current.search);
           params.delete("layer_handoff");
           params.delete("layer_nonce");
+          params.set("layer_auth_return", "1");
           dest.search = params.toString() ? `?${params.toString()}` : "";
-          dest.hash = url.hash;
+          dest.hash = current.hash;
           return dest.href;
         }
 
         function continueHere() {
-          try {
-            sessionStorage.setItem("layer:auth-success-pending", "1");
-            sessionStorage.setItem("layer:auth-handoff-nonce", nonce);
-          } catch {}
-          window.location.replace(rootDestination(current));
+          // Fallback when the original Layer tab was closed or Safari suspended
+          // it too aggressively. The app root can complete Supabase's PKCE code
+          // exchange in this tab because it shares the same origin/storage.
+          window.location.replace(appDestination());
         }
 
-        // The original Layer tab deliberately navigates here with handoff=1.
-        // In that tab we simply preserve the Supabase auth code/hash and return
-        // to the app root where supabase-js consumes it.
-        if (handoff) {
+        if (!code) {
           continueHere();
           return;
         }
@@ -66,10 +63,7 @@
         let channel = null;
         let acknowledged = false;
         let completed = false;
-        const handoffUrl = new URL(current.href);
-        handoffUrl.searchParams.set("layer_handoff", "1");
-        handoffUrl.searchParams.set("layer_nonce", nonce);
-        const payload = { type: "layer-auth-handoff", nonce, url: handoffUrl.href, at: Date.now() };
+        const payload = { type: "layer-auth-code", nonce, code, at: Date.now() };
 
         const showDone = () => {
           document.getElementById("working").style.display = "none";
@@ -84,31 +78,35 @@
             if (data.type === "layer-auth-ack") acknowledged = true;
             if (data.type === "layer-auth-complete") {
               completed = true;
+              try { localStorage.removeItem(STORAGE_KEY); } catch {}
               showDone();
+            }
+            if (data.type === "layer-auth-error") {
+              try { localStorage.removeItem(STORAGE_KEY); } catch {}
+              setTimeout(continueHere, 250);
             }
           };
           channel.postMessage(payload);
         } catch {}
 
-        // Storage events are a fallback for browsers that suspend BroadcastChannel
-        // delivery to a background tab.
+        // Storage events cover browsers that suspend BroadcastChannel delivery
+        // while the original tab is backgrounded.
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch {}
 
-        // If the original tab cannot accept the handoff, never strand the user:
-        // finish authentication in this tab instead.
+        // No original tab answered: complete the same one-time code in this tab.
         setTimeout(() => {
           if (!acknowledged && !completed) continueHere();
-        }, 3200);
+        }, 2800);
 
-        // If the old tab accepted the handoff but cannot report completion, keep
-        // the page useful rather than spinning forever.
+        // If the old tab accepted the code but cannot report completion, leave a
+        // useful escape route instead of keeping an endless spinner.
         setTimeout(() => {
-          if (acknowledged && !completed) showDone();
-        }, 10000);
+          if (acknowledged && !completed) continueHere();
+        }, 12000);
 
         document.getElementById("close").addEventListener("click", () => {
           window.close();
-          setTimeout(() => { window.location.href = rootDestination(current); }, 150);
+          setTimeout(() => { window.location.href = new URL("./", current).href; }, 150);
         });
       })();
     </script>

@@ -156,6 +156,31 @@ export async function pullModel() {
   }
 }
 
+/**
+ * Read the lightweight setup row for the signed-in account. Older Layer
+ * accounts can have this row even if an interrupted sync left model_state
+ * empty; the app can rebuild the initial personalized model from it.
+ */
+export async function pullProfile() {
+  if (!cloudEnabled || !cloudAllowed()) return null;
+  try {
+    const user = await ensureAuth();
+    if (!user) return null;
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("climate, tolerance, is_anonymous, updated_at")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (error) throw error;
+    markNet("active");
+    return data;
+  } catch (error) {
+    console.warn("[sync] profile pull failed:", error?.message || error);
+    markNet("unavailable");
+    return null;
+  }
+}
+
 async function uploadPendingModel() {
   pushTimer = null;
   if (!cloudAllowed()) { pendingModel = null; return; }
@@ -501,6 +526,30 @@ function oauthOptions(provider, { cornell = false } = {}) {
     options.queryParams = { hd: CORNELL_DOMAIN, prompt: "select_account" };
   }
   return options;
+}
+
+/**
+ * Complete a PKCE callback inside the already-open Layer tab.
+ * The callback page sends only the one-time auth code across a same-origin
+ * BroadcastChannel; Supabase exchanges it here, where the original tab's
+ * client and storage are already active. This avoids navigating the app away
+ * to auth-callback.html and back, which was the source of the visible flicker.
+ */
+export async function exchangeAuthCode(code) {
+  if (!cloudEnabled) return { ok: false, error: "Cloud sync is not configured." };
+  const authCode = String(code || "").trim();
+  if (!authCode) return { ok: false, error: "The sign-in link did not include a valid code." };
+
+  try {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(authCode);
+    if (error) throw error;
+    return { ok: true, user: data?.user ?? data?.session?.user ?? null };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.message || "Layer could not finish the sign-in. Request a new email link and try again.",
+    };
+  }
 }
 
 /**

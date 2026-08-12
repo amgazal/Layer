@@ -18,10 +18,11 @@ import {
 } from "./lib/weather";
 import { visibleTemperatureShift, temperatureShiftLabel } from "./lib/presentation";
 import {
-  ensureAuth, pullModel, pushModel, pushProfile, logEvent,
+  ensureAuth, pullModel, pullProfile, pushModel, pushProfile, logEvent,
   flushOutbox, setCloudPref, subscribeCloud, retryCloud,
   subscribeAuth, currentAuth, hasPendingReset, resetPersonalizationCloud,
   availableProviders, startProviderAuth, sendEmailLink, signOutCloud,
+  exchangeAuthCode,
 } from "./lib/sync";
 
 const CAMPUS = {
@@ -116,6 +117,20 @@ const TOLERANCE = [
   { key: "same", label: "About the same", adj: 0 },
   { key: "warmer", label: "Usually warmer", adj: 3 },
 ];
+
+function seededModelFromSetup(climateKey, toleranceKey) {
+  const climate = CLIMATES.find((x) => x.key === climateKey);
+  const tol = TOLERANCE.find((x) => x.key === toleranceKey);
+  if (!climate || !tol) return null;
+
+  const next = deepCopy(EMPTY_MODEL);
+  next.seeded = true;
+  for (const key of ["cold", "mild", "warm"]) {
+    next.regime[key].off = clamp(climate.seed[key] + tol.adj, -CLAMP, CLAMP);
+    next.regime[key].n = 0.6;
+  }
+  return next;
+}
 
 const ACTIVITIES = {
   waiting: { label: "Standing", Icon: Timer, adj: -5, hint: "Stop, platform, queue" },
@@ -935,45 +950,57 @@ export default function Layer() {
   const [auth, setAuth] = useState(() => currentAuth());
   useEffect(() => subscribeAuth((a) => { if (mounted.current) setAuth(a); }), []);
 
-  // Best-effort email-link handoff. Email apps commonly open links in a new
-  // browser tab and web pages are not allowed to force-focus an existing tab.
-  // When the original Layer tab is still open, the callback broadcasts the
-  // Supabase auth URL and this tab takes over the verification instead.
+  // Finish email authentication inside the already-open Layer tab. The email
+  // callback sends the one-time PKCE code over same-origin BroadcastChannel /
+  // storage. Exchanging the code here keeps this tab in place instead of
+  // navigating it to auth-callback.html and back (the visible flicker in the
+  // mobile recording).
   useEffect(() => {
-    const channelName = "layer-auth-handoff-v1";
-    const storageKey = "layer:auth-handoff";
+    const channelName = "layer-auth-handoff-v2";
+    const storageKey = "layer:auth-code-handoff-v2";
     let channel = null;
-    let navigating = false;
+    let exchanging = false;
 
-    const acceptHandoff = (data) => {
-      if (navigating || data?.type !== "layer-auth-handoff" || !data?.url) return;
-      try {
-        const target = new URL(data.url, window.location.href);
-        if (target.origin !== window.location.origin || !target.pathname.endsWith("/auth-callback.html")) return;
-        navigating = true;
-        try { channel?.postMessage({ type: "layer-auth-ack", nonce: data.nonce }); } catch {}
-        window.location.replace(target.href);
-      } catch {}
+    const acceptCode = async (data) => {
+      if (exchanging || data?.type !== "layer-auth-code" || !data?.code) return;
+      if (data?.at && Date.now() - Number(data.at) > 2 * 60 * 1000) return;
+      exchanging = true;
+      setAccountRestoreBusy(true);
+      try { channel?.postMessage({ type: "layer-auth-ack", nonce: data.nonce }); } catch {}
+
+      const result = await exchangeAuthCode(data.code);
+      if (result.ok) {
+        try { channel?.postMessage({ type: "layer-auth-complete", nonce: data.nonce }); } catch {}
+        try { localStorage.removeItem(storageKey); } catch {}
+        // SIGNED_IN now drives the normal permanent-account restoration effect.
+        // Keep the loading state up until that effect finishes so onboarding
+        // never flashes between authentication and model restoration.
+        return;
+      }
+
+      exchanging = false;
+      if (mounted.current) {
+        setAccountRestoreBusy(false);
+        setAccountNotice(result.error || "Layer could not finish the sign-in. Request a new email link and try again.");
+      }
+      try { channel?.postMessage({ type: "layer-auth-error", nonce: data.nonce }); } catch {}
     };
 
     try {
       channel = new BroadcastChannel(channelName);
-      channel.onmessage = (event) => acceptHandoff(event.data);
+      channel.onmessage = (event) => { acceptCode(event.data); };
     } catch {}
 
     const onStorage = (event) => {
       if (event.key !== storageKey || !event.newValue) return;
-      try {
-        const data = JSON.parse(event.newValue);
-        if (Date.now() - Number(data.at || 0) < 2 * 60 * 1000) acceptHandoff(data);
-      } catch {}
+      try { acceptCode(JSON.parse(event.newValue)); } catch {}
     };
     window.addEventListener("storage", onStorage);
 
-    // Covers a callback that arrived while this tab was briefly suspended.
+    // Covers a callback that arrived while Safari briefly suspended this tab.
     try {
       const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
-      if (saved && Date.now() - Number(saved.at || 0) < 15000) acceptHandoff(saved);
+      if (saved) acceptCode(saved);
     } catch {}
 
     return () => {
@@ -998,7 +1025,7 @@ export default function Layer() {
 
     if (nonce) {
       try {
-        const channel = new BroadcastChannel("layer-auth-handoff-v1");
+        const channel = new BroadcastChannel("layer-auth-handoff-v2");
         channel.postMessage({ type: "layer-auth-complete", nonce });
         channel.close();
       } catch {}
@@ -1006,7 +1033,7 @@ export default function Layer() {
     try {
       sessionStorage.removeItem("layer:auth-success-pending");
       sessionStorage.removeItem("layer:auth-handoff-nonce");
-      localStorage.removeItem("layer:auth-handoff");
+      localStorage.removeItem("layer:auth-code-handoff-v2");
     } catch {}
   }, [auth.status, auth.email]);
 
@@ -1141,6 +1168,21 @@ export default function Layer() {
           }
         }
 
+        // Recovery path for older/interrupted accounts: onboarding answers live
+        // in profiles independently from model_state. If model_state is missing,
+        // rebuild the same initial personalized model instead of incorrectly
+        // sending a known account back through onboarding.
+        const savedProfile = await pullProfile();
+        if (cancelled || !mounted.current) return;
+        const rebuilt = seededModelFromSetup(savedProfile?.climate, savedProfile?.tolerance);
+        if (rebuilt) {
+          setModel(rebuilt);
+          await storageSet(MODEL_KEY, JSON.stringify(rebuilt));
+          pushModel(rebuilt, totalObservations(rebuilt));
+          setAccountNotice("Welcome back — your Layer profile has been restored.");
+          return;
+        }
+
         // A valid account can exist without a saved Layer model (for example,
         // the address was just used for the first time). Do not call that an
         // error. If this device already has a profile, attach it; otherwise keep
@@ -1173,14 +1215,8 @@ export default function Layer() {
     // Record the consent choice BEFORE any model change triggers a sync.
     setCloudPref(allowCloud);
     setCloudState(allowCloud ? "connecting" : "device-only");
-    const climate = CLIMATES.find((x) => x.key === climateKey);
-    const tol = TOLERANCE.find((x) => x.key === tolKey);
-    const next = deepCopy(EMPTY_MODEL);
-    next.seeded = true;
-    for (const k of ["cold", "mild", "warm"]) {
-      next.regime[k].off = clamp(climate.seed[k] + tol.adj, -CLAMP, CLAMP);
-      next.regime[k].n = 0.6;
-    }
+    const next = seededModelFromSetup(climateKey, tolKey);
+    if (!next) return;
     commit(next);
     pushProfile({ climate: climateKey, tolerance: tolKey });
   }, [commit]);
@@ -1799,8 +1835,8 @@ export default function Layer() {
   }, [accountNotice]);
 
   if (!ready || auth.status === "checking") return <LoadingScreen />;
-  const restoringSignedInProfile = !model.seeded && auth.status === "permanent" && (
-    accountRestoreBusy || (auth.signedInAt && auth.signedInAt !== adoptedSignIn.current)
+  const restoringSignedInProfile = !model.seeded && (
+    accountRestoreBusy || (auth.status === "permanent" && auth.signedInAt && auth.signedInAt !== adoptedSignIn.current)
   );
   if (restoringSignedInProfile) {
     return <LoadingScreen message="Loading your saved Layer profile…" />;
@@ -3214,8 +3250,8 @@ label:has(input:focus-visible) {
   .content-grid { grid-template-columns: 1fr; }
   .hero { order: 1; padding-right: 0; }
   .wear-card { order: 2; }
-  .activity-card { order: 3; }
-  .compact-planner { position: static; order: 4; }
+  .compact-planner { position: static; order: 3; }
+  .activity-card { order: 4; }
   .threat-card { order: 5; }
   .feedback-card { order: 6; }
   .calibration-card { order: 7; }
