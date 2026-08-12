@@ -411,7 +411,9 @@ export async function resetPersonalizationCloud(emptyModel) {
 
 /* ── account identity ───────────────────────────────────────────────── */
 // status: none | anonymous | permanent
-let authInfo = { status: "none", email: null, provider: null, signedInAt: 0 };
+let authInfo = cloudEnabled
+  ? { status: "checking", email: null, provider: null, userId: null, signedInAt: 0 }
+  : { status: "none", email: null, provider: null, userId: null, signedInAt: 0 };
 const authListeners = new Set();
 
 export function currentAuth() { return authInfo; }
@@ -430,7 +432,7 @@ if (cloudEnabled) {
     const user = session?.user;
     if (!user) {
       authPromise = null;
-      setAuth({ status: "none", email: null, provider: null, signedInAt: 0 });
+      setAuth({ status: "none", email: null, provider: null, userId: null, signedInAt: 0 });
       return;
     }
 
@@ -446,14 +448,20 @@ if (cloudEnabled) {
       emit();
     }
 
+    const accountChanged = permanent && user.id !== authInfo.userId;
+    const shouldRestore = permanent && (
+      event === "SIGNED_IN" || event === "INITIAL_SESSION" || accountChanged
+    );
+
     setAuth({
       status: permanent ? "permanent" : "anonymous",
       email: user.email ?? null,
       provider: permanent ? provider : null,
-      // A fresh SIGNED_IN on a permanent account means "bring my profile here",
-      // which the app uses to adopt the cloud model even if this device has
-      // more local observations.
-      signedInAt: permanent && event === "SIGNED_IN" ? Date.now() : authInfo.signedInAt,
+      userId: user.id ?? null,
+      // A permanent session means "bring my profile here". INITIAL_SESSION is
+      // included so a returning user who refreshes on a new device restores
+      // before onboarding is shown, rather than briefly flashing setup first.
+      signedInAt: shouldRestore ? Date.now() : authInfo.signedInAt,
     });
 
     if (permanent) {
@@ -503,7 +511,12 @@ function oauthOptions(provider, { cornell = false } = {}) {
  */
 export async function startProviderAuth(provider, { mode = "link", cornell = false } = {}) {
   if (!cloudEnabled) return { ok: false, error: "Cloud sync is not configured." };
-  if (!cloudAllowed()) return { ok: false, error: "Turn on cloud sync first." };
+  // Returning-user sign-in must not create an anonymous session first. Doing so
+  // causes auth-state flicker and can briefly reconcile the wrong cloud profile.
+  // Permanent sign-in turns account sync on automatically in onAuthStateChange.
+  if (mode !== "signin" && !cloudAllowed()) {
+    return { ok: false, error: "Turn on cloud sync first." };
+  }
 
   const options = oauthOptions(provider, { cornell });
   try {
@@ -532,7 +545,11 @@ export async function startProviderAuth(provider, { mode = "link", cornell = fal
  */
 export async function sendEmailLink(email, { mode = "link" } = {}) {
   if (!cloudEnabled) return { ok: false, error: "Cloud sync is not configured." };
-  if (!cloudAllowed()) return { ok: false, error: "Turn on cloud sync first." };
+  // A returning user signs directly into the permanent account. Do not opt in
+  // to anonymous sync or mint a throwaway anonymous user before this request.
+  if (mode !== "signin" && !cloudAllowed()) {
+    return { ok: false, error: "Turn on cloud sync first." };
+  }
   const address = String(email || "").trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
     return { ok: false, error: "Enter a valid email address." };
@@ -554,16 +571,23 @@ export async function sendEmailLink(email, { mode = "link" } = {}) {
       email: address,
       options: {
         emailRedirectTo: authRedirectUrl(),
-        // On the onboarding sign-in path, an unknown email should not silently
-        // create a brand-new account. That would leave a returning user with an
-        // empty profile and make it look as though Layer lost their history.
+        // On the returning-user path, only existing accounts should receive a
+        // sign-in link. New users should finish the normal Layer setup first.
         shouldCreateUser: mode !== "signin",
       },
     });
     if (error) {
-      const friendly = mode === "signin"
-        ? "We couldn't find a saved Layer account for that email. Check the address or set up a new profile."
-        : error.message;
+      const message = String(error.message || "");
+      const code = String(error.code || "");
+      const rateLimited = /rate|seconds|too many/i.test(message) || /rate_limit/i.test(code);
+      const missingAccount = mode === "signin" && (
+        code === "otp_disabled" || /signups not allowed for otp/i.test(message)
+      );
+      const friendly = rateLimited
+        ? "Please wait a moment before requesting another sign-in link."
+        : missingAccount
+          ? "We couldn't send a returning-user link for that address. Check the email, or set up a new Layer profile."
+          : (message || "Could not send the sign-in link.");
       return { ok: false, error: friendly };
     }
     return { ok: true, mode: "signin" };

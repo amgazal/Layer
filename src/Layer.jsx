@@ -20,7 +20,7 @@ import { visibleTemperatureShift, temperatureShiftLabel } from "./lib/presentati
 import {
   ensureAuth, pullModel, pushModel, pushProfile, logEvent,
   flushOutbox, setCloudPref, subscribeCloud, retryCloud,
-  subscribeAuth, hasPendingReset, resetPersonalizationCloud,
+  subscribeAuth, currentAuth, hasPendingReset, resetPersonalizationCloud,
   availableProviders, startProviderAuth, sendEmailLink, signOutCloud,
 } from "./lib/sync";
 
@@ -459,7 +459,7 @@ function scenicByCode(code) {
 }
 
 
-function LoadingScreen() {
+function LoadingScreen({ message = "Reading the weather on campus…" } = {}) {
   return (
     <div
       className="lyr weather-cloudy loading-screen"
@@ -475,7 +475,7 @@ function LoadingScreen() {
       <div className="loading-content" role="status" aria-live="polite">
         <span className="loading-brand">Layer</span>
         <RefreshCw className="loading-spinner" size={24} strokeWidth={2.2} />
-        <span>Reading the weather on campus…</span>
+        <span>{message}</span>
       </div>
     </div>
   );
@@ -581,7 +581,10 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud, intent =
     const key = opts.cornell ? "cornell" : provider;
     setBusy(key);
     setStatus(null);
-    const ready = await prepareCloud();
+    // Returning users sign directly into their permanent account. Creating an
+    // anonymous cloud session here causes the onboarding/auth UI to flicker and
+    // can reconcile a temporary profile before the real account arrives.
+    const ready = intent === "signin" ? true : await prepareCloud();
     if (!ready) { setBusy(null); return; }
     const res = await startProviderAuth(provider, { mode: intent, ...opts });
     if (!res.ok) {
@@ -594,7 +597,7 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud, intent =
   const submitEmail = async () => {
     setBusy("email");
     setStatus(null);
-    const ready = await prepareCloud();
+    const ready = intent === "signin" ? true : await prepareCloud();
     if (!ready) { setBusy(null); return; }
     const res = await sendEmailLink(email, { mode: intent });
     setBusy(null);
@@ -903,6 +906,7 @@ export default function Layer() {
   const [askBlame, setAskBlame] = useState(null);
   const [toast, setToast] = useState(null);
   const [accountNotice, setAccountNotice] = useState(null);
+  const [accountRestoreBusy, setAccountRestoreBusy] = useState(false);
   // A brand-new tester has not been outside yet, so the rating controls stay
   // behind one deliberate tap. This prevents accidental day-one feedback from
   // training the model before the user has actually tried a recommendation.
@@ -928,7 +932,7 @@ export default function Layer() {
   useEffect(() => subscribeCloud((s) => { if (mounted.current) setCloudState(s); }), []);
 
   // Account identity (anonymous vs signed in), used by the profile panel.
-  const [auth, setAuth] = useState({ status: "none", email: null, provider: null, signedInAt: 0 });
+  const [auth, setAuth] = useState(() => currentAuth());
   useEffect(() => subscribeAuth((a) => { if (mounted.current) setAuth(a); }), []);
 
   // Best-effort email-link handoff. Email apps commonly open links in a new
@@ -1118,7 +1122,9 @@ export default function Layer() {
   useEffect(() => {
     if (!auth.signedInAt || auth.signedInAt === adoptedSignIn.current) return;
     adoptedSignIn.current = auth.signedInAt;
+    const hadLocalProfile = Boolean(model.seeded);
     let cancelled = false;
+    setAccountRestoreBusy(true);
     (async () => {
       try {
         const cloud = await pullModel();
@@ -1128,22 +1134,39 @@ export default function Layer() {
           if (cloudModel.seeded) {
             setModel(cloudModel);
             await storageSet(MODEL_KEY, JSON.stringify(cloudModel));
-            setAccountNotice("Signed in — your saved Layer profile is ready.");
+            if (!cancelled && mounted.current) {
+              setAccountNotice("Welcome back — your saved Layer profile is ready.");
+            }
             return;
           }
         }
-        // Nothing saved on the account yet: keep this device's profile and
-        // push it up so the account starts from what the user already has.
-        setModel((current) => {
-          if (current?.seeded) pushModel(current, totalObservations(current));
-          return current;
-        });
-        setAccountNotice("Signed in — this profile is now saved to your account.");
+
+        // A valid account can exist without a saved Layer model (for example,
+        // the address was just used for the first time). Do not call that an
+        // error. If this device already has a profile, attach it; otherwise keep
+        // onboarding open and explain that setup only needs to be completed once.
+        if (hadLocalProfile) {
+          setModel((current) => {
+            if (current?.seeded) pushModel(current, totalObservations(current));
+            return current;
+          });
+          setAccountNotice("Signed in — this device's Layer profile is now synced.");
+        } else {
+          setAccountNotice("Signed in. No saved Layer profile was found yet — finish setup once to get started.");
+        }
       } catch {
-        /* offline: local profile stands, reconciliation retries on next load */
+        if (!cancelled && mounted.current) {
+          setAccountNotice("You're signed in, but your saved profile couldn't load yet. Check your connection and try again.");
+        }
+      } finally {
+        if (!cancelled && mounted.current) setAccountRestoreBusy(false);
       }
     })();
     return () => { cancelled = true; };
+    // model.seeded is captured intentionally at the moment this sign-in starts;
+    // including it as a dependency would cancel the restore as soon as the
+    // cloud model is applied.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.signedInAt]);
 
   const seed = useCallback((climateKey, tolKey, allowCloud = false) => {
@@ -1775,7 +1798,13 @@ export default function Layer() {
     return () => clearTimeout(id);
   }, [accountNotice]);
 
-  if (!ready) return <LoadingScreen />;
+  if (!ready || auth.status === "checking") return <LoadingScreen />;
+  const restoringSignedInProfile = !model.seeded && auth.status === "permanent" && (
+    accountRestoreBusy || (auth.signedInAt && auth.signedInAt !== adoptedSignIn.current)
+  );
+  if (restoringSignedInProfile) {
+    return <LoadingScreen message="Loading your saved Layer profile…" />;
+  }
   if (!model.seeded) {
     return (
       <Onboarding
@@ -1944,6 +1973,14 @@ export default function Layer() {
                 ))}
               </div>
             </div>
+            <label className={`toggle-row ride-toggle ${cycling ? "active" : ""}`}>
+              <div className="toggle-copy">
+                <Bike size={18} strokeWidth={2.2} />
+                <span><strong>Bike or scooter</strong><small>Adjust for extra wind while riding.</small></span>
+              </div>
+              <input type="checkbox" checked={cycling} onChange={(e) => setCycling(e.target.checked)} />
+              <span className="toggle-ui" />
+            </label>
             {planOpen && (
               <div id="outing-planner-controls" className="planner-body">
                 <div className="plan-block">
@@ -1957,11 +1994,6 @@ export default function Layer() {
                     ))}
                   </div>
                 </div>
-                <label className={`toggle-row ${cycling ? "active" : ""}`}>
-                  <div className="toggle-copy"><Bike size={18} strokeWidth={2.2} /><span><strong>Cycling or scootering</strong><small>Temporary trip modifier</small></span></div>
-                  <input type="checkbox" checked={cycling} onChange={(e) => setCycling(e.target.checked)} />
-                  <span className="toggle-ui" />
-                </label>
               </div>
             )}
             <div className="planner-summary">
@@ -2554,6 +2586,8 @@ const css = `
 }
 .toggle-row.active .toggle-ui { background: rgba(234, 177, 73, .85); }
 .toggle-row.active .toggle-ui::after { left: 21px; }
+.ride-toggle { margin-top: 14px; }
+.ride-toggle strong { font-size: 14px; }
 .planner-summary {
   margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(17, 32, 51, .08); color: #54657f;
   display: flex; justify-content: space-between; gap: 10px; font-weight: 600; flex-wrap: wrap;
@@ -3218,6 +3252,9 @@ label:has(input:focus-visible) {
   .wear-symbol { width: 48px; height: 40px; font-size: 8px; }
   .acts, .fb-row { flex-direction: column; }
   .duration-chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ride-toggle { margin-top: 12px; padding: 12px 13px; }
+  .ride-toggle .toggle-copy { gap: 10px; }
+  .ride-toggle .toggle-copy small { line-height: 1.3; }
   .threat-head { grid-template-columns:1fr; align-items:stretch; gap:12px; }
   .scale { gap:4px; font-size:9px; }
   .threat {
