@@ -5,16 +5,17 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-* { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: border-box; }
 html, body, #root {
   min-height: 100%;
   width: 100%;
   max-width: 100%;
   margin: 0;
-  overflow-x: clip;
+  overflow-x: hidden;
   overscroll-behavior-x: none;
 }
 body {
+  position: relative;
   min-width: 0;
   min-height: 100vh;
   touch-action: pan-y;

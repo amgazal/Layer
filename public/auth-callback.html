@@ -6,12 +6,14 @@
     <meta name="theme-color" content="#112033" />
     <title>Signing in to Layer…</title>
     <style>
-      *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#112033;color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-      body{min-height:100vh;display:grid;place-items:center;padding:24px;text-align:center}
+      *{box-sizing:border-box}
+      html,body{margin:0;min-height:100%;background:#112033;color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      body{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:max(24px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) max(24px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));text-align:center;overflow-x:hidden}
       main{width:min(390px,100%);padding:30px 24px;border:1px solid rgba(255,255,255,.12);border-radius:28px;background:rgba(255,255,255,.07);box-shadow:0 24px 80px rgba(0,0,0,.28)}
       .spinner{display:inline-block;width:30px;height:30px;border:3px solid rgba(255,255,255,.22);border-top-color:#f2bd4c;border-radius:50%;animation:spin .8s linear infinite}
       h1{margin:18px 0 8px;font-size:28px}p{margin:0;color:rgba(255,255,255,.76);line-height:1.55}.done{display:none}.check{width:46px;height:46px;margin:auto;border-radius:50%;display:grid;place-items:center;background:#2d8c61;font-weight:900;font-size:25px}
-      button{margin-top:20px;width:100%;min-height:48px;border:0;border-radius:14px;background:#f2bd4c;color:#112033;font-weight:800;font-size:15px;cursor:pointer}
+      button{margin-top:20px;width:100%;min-height:50px;border:0;border-radius:14px;background:#f2bd4c;color:#112033;font-weight:800;font-size:15px;cursor:pointer}
+      .subtle{margin-top:12px;font-size:12px;color:rgba(255,255,255,.58)}
       @keyframes spin{to{transform:rotate(360deg)}}
     </style>
   </head>
@@ -19,14 +21,15 @@
     <main aria-live="polite">
       <section id="working">
         <span class="spinner" aria-hidden="true"></span>
-        <h1>Finishing your sign-in</h1>
-        <p>Returning your Layer account to the tab you started from…</p>
+        <h1>Signing you in</h1>
+        <p>Layer is securely connecting this email to your saved profile.</p>
       </section>
       <section id="done" class="done">
         <div class="check" aria-hidden="true">✓</div>
-        <h1>You're all set</h1>
-        <p>Your original Layer tab is finishing the sign-in. You can return to it now.</p>
-        <button type="button" id="close">Close this tab</button>
+        <h1>You're signed in</h1>
+        <p>Your Layer profile is ready. Returning you to the app…</p>
+        <button type="button" id="return">Return to Layer</button>
+        <p class="subtle">If your original Layer tab is still open, it has been updated too.</p>
       </section>
     </main>
     <script>
@@ -36,27 +39,40 @@
         const current = new URL(window.location.href);
         const code = current.searchParams.get("code");
         const nonce = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+        let returnTimer = null;
 
-        function appDestination() {
+        function appDestination({ keepCode = false } = {}) {
           const dest = new URL("./", current);
           const params = new URLSearchParams(current.search);
           params.delete("layer_handoff");
           params.delete("layer_nonce");
+          if (!keepCode) params.delete("code");
           params.set("layer_auth_return", "1");
           dest.search = params.toString() ? `?${params.toString()}` : "";
-          dest.hash = current.hash;
+          // Auth codes are delivered in the query for PKCE. Do not carry an
+          // unrelated hash into the app shell after the handoff.
+          dest.hash = "";
           return dest.href;
+        }
+
+        function returnToLayer() {
+          if (returnTimer) clearTimeout(returnTimer);
+          // At this point the original Layer tab has already exchanged the code
+          // and persisted the session to same-origin storage. Navigate this tab
+          // to the clean app URL instead of trying to close the browser tab, which can
+          // expose whichever unrelated browser tab happens to sit underneath.
+          window.location.replace(appDestination({ keepCode: false }));
         }
 
         function continueHere() {
           // Fallback when the original Layer tab was closed or Safari suspended
-          // it too aggressively. The app root can complete Supabase's PKCE code
-          // exchange in this tab because it shares the same origin/storage.
-          window.location.replace(appDestination());
+          // it. Preserve the one-time PKCE code so the app root can exchange it
+          // in this same browser/device.
+          window.location.replace(appDestination({ keepCode: true }));
         }
 
         if (!code) {
-          continueHere();
+          window.location.replace(appDestination({ keepCode: false }));
           return;
         }
 
@@ -68,6 +84,9 @@
         const showDone = () => {
           document.getElementById("working").style.display = "none";
           document.getElementById("done").style.display = "block";
+          // A short success beat keeps the action understandable, then returns
+          // the user to Layer without requiring a fragile "close tab" action.
+          returnTimer = setTimeout(returnToLayer, 1100);
         };
 
         try {
@@ -89,25 +108,20 @@
           channel.postMessage(payload);
         } catch {}
 
-        // Storage events cover browsers that suspend BroadcastChannel delivery
-        // while the original tab is backgrounded.
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch {}
 
-        // No original tab answered: complete the same one-time code in this tab.
+        // No original tab answered: finish the same one-time code in this tab.
         setTimeout(() => {
           if (!acknowledged && !completed) continueHere();
         }, 2800);
 
-        // If the old tab accepted the code but cannot report completion, leave a
-        // useful escape route instead of keeping an endless spinner.
+        // If the old tab accepted the code but cannot report completion, use the
+        // same-tab fallback instead of leaving an endless spinner.
         setTimeout(() => {
           if (acknowledged && !completed) continueHere();
         }, 12000);
 
-        document.getElementById("close").addEventListener("click", () => {
-          window.close();
-          setTimeout(() => { window.location.href = new URL("./", current).href; }, 150);
-        });
+        document.getElementById("return").addEventListener("click", returnToLayer);
       })();
     </script>
   </body>

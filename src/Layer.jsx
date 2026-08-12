@@ -235,7 +235,7 @@ function threatsFor({ effective, wind, gust, cond, precip, peakRainRate, isDay }
   const threats = [
     { key: "cold", label: "Cold", Icon: Snowflake, level: cold, blame: "Cold" },
     { key: "wind", label: "Wind", Icon: Wind, level: windLevel, blame: "Wind" },
-    { key: "wet", label: "Wet weather", Icon: Droplets, level: wet, blame: "Rain or dampness" },
+    { key: "wet", label: cond.snow ? "Snow & dampness" : "Rain & dampness", Icon: Droplets, level: wet, blame: "Rain or dampness" },
   ];
 
   // At night there is no direct-sun exposure to display or calibrate.
@@ -941,6 +941,27 @@ export default function Layer() {
   const profilePanelRef = useRef(null);
 
   useEffect(() => () => { mounted.current = false; }, []);
+
+  // Mobile Safari can preserve a tiny horizontal scroll offset after an auth
+  // handoff or browser-tab transition. Layer has no horizontal navigation, so
+  // clamp that offset whenever this page becomes active.
+  useEffect(() => {
+    const clampHorizontalScroll = () => {
+      if (typeof window === "undefined") return;
+      const y = window.scrollY || 0;
+      if (window.scrollX !== 0) window.scrollTo(0, y);
+      if (document.documentElement) document.documentElement.scrollLeft = 0;
+      if (document.body) document.body.scrollLeft = 0;
+    };
+    clampHorizontalScroll();
+    requestAnimationFrame(clampHorizontalScroll);
+    window.addEventListener("pageshow", clampHorizontalScroll);
+    window.addEventListener("orientationchange", clampHorizontalScroll);
+    return () => {
+      window.removeEventListener("pageshow", clampHorizontalScroll);
+      window.removeEventListener("orientationchange", clampHorizontalScroll);
+    };
+  }, []);
 
   // Reflect background sync status in the UI (device-only | local | connecting
   // | active | unavailable) so calibration storage is never a mystery.
@@ -2411,7 +2432,7 @@ const css = `
   width: 100%;
   max-width: 100%;
   position: relative;
-  overflow-x: clip;
+  overflow-x: hidden;
   overscroll-behavior-x: none;
   touch-action: pan-y;
   background: #142236;
@@ -3301,13 +3322,28 @@ label:has(input:focus-visible) {
   .th-l { min-width: 0; }
   .meter { width: 100%; min-height: 9px; }
   .follow-line, .planner-head, .card-head { align-items: flex-start; }
-  .ob-wrap { align-items:flex-start; padding:12px; }
+  .lyr.ob-wrap {
+    width:auto; max-width:none; min-width:0;
+    align-items:flex-start;
+    padding-top:max(12px, env(safe-area-inset-top));
+    padding-right:max(12px, env(safe-area-inset-right));
+    padding-bottom:max(12px, env(safe-area-inset-bottom));
+    padding-left:max(12px, env(safe-area-inset-left));
+    overflow-x:hidden;
+  }
   .ob-scene { background-position:57% center; }
   .ob-backdrop {
     background:
       linear-gradient(180deg, rgba(5,16,29,.40) 0%, rgba(5,16,29,.66) 42%, rgba(5,16,29,.78) 100%);
   }
-  .ob-card { margin-top:max(8px, env(safe-area-inset-top)); padding:22px 17px; border-radius:26px; }
+  .ob-card {
+    box-sizing:border-box; width:100%; max-width:760px; min-width:0; margin:0 auto;
+    padding:22px 17px; border-radius:26px; overflow:hidden;
+  }
+  .ob-card > * { min-width:0; max-width:100%; }
+  .ob-brand-row { width:100%; min-width:0; }
+  .ob-mark { flex:0 1 auto; min-width:0; }
+  .ob-signin-entry, .ob-signed-entry { flex:0 0 auto; max-width:44%; white-space:nowrap; }
   .ob-brand-row { margin-bottom:15px; }
   .ob-signin-entry { min-height:36px; padding:7px 10px; font-size:12px; }
   .ob-time { font-size:9.5px; min-height:27px; }
@@ -3327,8 +3363,9 @@ label:has(input:focus-visible) {
   .email-sent-view { padding:22px 20px calc(24px + env(safe-area-inset-bottom)); }
   .email-sent-art { width:126px; height:112px; margin-top:24px; }
   .email-sent-view h3 { font-size:25px; }
-  .ob-h { font-size:43px; }
-  .ob-p { font-size:15px; margin-bottom:18px; }
+  .ob-h { font-size:clamp(38px, 11vw, 43px); overflow-wrap:anywhere; }
+  .ob-p { font-size:15px; margin-bottom:18px; overflow-wrap:anywhere; }
+  .ob-opt, .ob-backup, .account-block, .account-email, .email-sent-modal { min-width:0; max-width:100%; }
   .ob-value-strip { grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; margin-bottom:22px; }
   .ob-value-strip span { flex-direction:column; justify-content:center; text-align:center; gap:6px; padding:8px 3px; font-size:10.5px; }
   .ob-opts { grid-template-columns:1fr; }

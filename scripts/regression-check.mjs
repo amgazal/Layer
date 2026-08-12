@@ -6,6 +6,7 @@ const supa = fs.readFileSync(new URL("../src/lib/supabase.js", import.meta.url),
 const weather = fs.readFileSync(new URL("../src/lib/weather.js", import.meta.url), "utf8");
 const schema = fs.readFileSync(new URL("../supabase/schema.sql", import.meta.url), "utf8");
 const indexHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const authCallback = fs.readFileSync(new URL("../public/auth-callback.html", import.meta.url), "utf8");
 const manifest = JSON.parse(fs.readFileSync(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
 
 const checks = [
@@ -46,6 +47,7 @@ const checks = [
   ["rain clothing covers the full outing window", /const outingWetLevel = Math\.max/.test(source) && /rainOuterwear/.test(source)],
   ["rainy outfits avoid duplicate outerwear", /isOuterwearLayer/.test(source) && /!isOuterwearLayer\(layer\.label\)/.test(source)],
   ["weather guidance uses plain language", /A wind-blocking jacket will help/.test(source) && /rain could get heavier while you’re out/i.test(source) && !/Rain may strengthen/.test(source)],
+  ["comfort wetness label is explicit", /Rain & dampness/.test(source) && /Snow & dampness/.test(source) && !/label: "Wet weather"/.test(source)],
   ["weather attribution never clutters the hero", !/className="data-credit"/.test(source)],
   ["feedback is clearly framed as post-outing", /How did the recommendation feel/.test(source) && /Rate it after your outing/.test(source)],
   ["not-followed feedback receives a simple thank-you", /Thanks — your feedback was saved\./.test(source) && !/did not retrain the model/.test(source)],
@@ -61,7 +63,7 @@ const checks = [
   ["queued feedback retries automatically with backoff", /scheduleRetry/.test(sync) && /RETRY_MAX_MS/.test(sync) && /addEventListener\("online"/.test(sync)],
   ["pending calibration is flushed when the page hides", /flushPendingModel/.test(sync) && /pagehide/.test(sync)],
   ["failed model push keeps the snapshot for retry", /if \(!pendingModel\) pendingModel = snapshot/.test(sync)],
-  ["mobile layout blocks horizontal drift", /overflow-x: clip/.test(source) && /touch-action: pan-y/.test(source) && !/100vw - 18px/.test(source)],
+  ["mobile layout blocks horizontal drift", /overflow-x: hidden/.test(source) && /touch-action: pan-y/.test(source) && /clampHorizontalScroll/.test(source) && /\.lyr\.ob-wrap[\s\S]*width:auto/.test(source) && !/100vw - 18px/.test(source)],
   ["email auth uses a real static callback page", /auth-callback\.html/.test(supa) && /base: "\.\/"/.test(fs.readFileSync(new URL("../vite.config.js", import.meta.url), "utf8"))],
   ["oauth redirects are consumed by the client", /detectSessionInUrl: true/.test(supa) && /authRedirectUrl/.test(supa)],
   ["sign-in links an anonymous profile before falling back", /linkIdentity/.test(sync) && /signInWithOAuth/.test(sync)],
@@ -73,7 +75,9 @@ const checks = [
   ["onboarding offers returning-user sign-in", /ob-signin-entry/.test(source) && /Welcome back\./.test(source) && /intent="signin"/.test(source)],
   ["onboarding privacy copy stays concise", /No account is required/.test(source) && /fixed campus location/.test(source)],
   ["email sent state is a dedicated UX", /EmailSentView/.test(source) && /Check your email/.test(source) && /Open email app/.test(source)],
-  ["email callback exchanges auth in the original tab without navigation", /layer-auth-handoff-v2/.test(source) && /exchangeAuthCode/.test(source) && /layer-auth-code/.test(fs.readFileSync(new URL("../public/auth-callback.html", import.meta.url), "utf8")) && !/window\.location\.replace\(target\.href\)/.test(source)],
+  ["email callback exchanges auth in the original tab without navigation", /layer-auth-handoff-v2/.test(source) && /exchangeAuthCode/.test(source) && /layer-auth-code/.test(authCallback) && !/window\.location\.replace\(target\.href\)/.test(source)],
+  ["email callback returns to Layer instead of closing into another browser tab", /Return to Layer/.test(authCallback) && /window\.location\.replace\(appDestination/.test(authCallback) && !/Close this tab/.test(authCallback) && !/window\.close\(\)/.test(authCallback)],
+  ["successful callback removes the already-used auth code before returning", /if \(!keepCode\) params\.delete\("code"\)/.test(authCallback) && /keepCode: false/.test(authCallback)],
   ["returning-user sign-in avoids false account-not-found errors", /shouldCreateUser: mode !== "signin"/.test(sync) && /Please wait a moment before requesting another sign-in link/.test(sync) && /No saved Layer profile was found yet/.test(source)],
   ["returning-user restore suppresses onboarding flicker", /auth\.status === "checking"/.test(source) && /accountRestoreBusy/.test(source) && /Loading your saved Layer profile/.test(source) && /pullProfile/.test(source) && /seededModelFromSetup/.test(source)],
   ["bike or scooter modifier is always visible in the planner", /ride-toggle/.test(source) && /Bike or scooter/.test(source) && source.indexOf('ride-toggle') < source.indexOf('{planOpen &&')],
