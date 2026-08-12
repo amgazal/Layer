@@ -436,6 +436,16 @@ if (cloudEnabled) {
 
     const permanent = user.is_anonymous === false;
     const provider = user.app_metadata?.provider ?? (user.email ? "email" : null);
+
+    // A permanent account is, by definition, the user's recoverable cloud
+    // identity. Keep account sync on even if an older device-only preference is
+    // still sitting in localStorage from before the sign-in.
+    if (permanent && cloudPreference() !== "on") {
+      lsSet(PREF_KEY, "on");
+      markNet("connecting");
+      emit();
+    }
+
     setAuth({
       status: permanent ? "permanent" : "anonymous",
       email: user.email ?? null,
@@ -542,9 +552,20 @@ export async function sendEmailLink(email, { mode = "link" } = {}) {
     }
     const { error } = await supabase.auth.signInWithOtp({
       email: address,
-      options: { emailRedirectTo: authRedirectUrl() },
+      options: {
+        emailRedirectTo: authRedirectUrl(),
+        // On the onboarding sign-in path, an unknown email should not silently
+        // create a brand-new account. That would leave a returning user with an
+        // empty profile and make it look as though Layer lost their history.
+        shouldCreateUser: mode !== "signin",
+      },
     });
-    if (error) return { ok: false, error: error.message };
+    if (error) {
+      const friendly = mode === "signin"
+        ? "We couldn't find a saved Layer account for that email. Check the address or set up a new profile."
+        : error.message;
+      return { ok: false, error: friendly };
+    }
     return { ok: true, mode: "signin" };
   } catch (error) {
     return { ok: false, error: error?.message || "Could not send the link." };

@@ -7,7 +7,7 @@ Layer is a Cornell campus-focused weather application that converts forecast dat
 
 This release uses Cornell/Ithaca-specific clear and overcast scenes and tightens the experience around one path:
 
-1. Complete a two-question, 30-second setup.
+1. New users complete a two-question setup; returning users can sign in from onboarding and skip it.
 2. See the current temperature beside Layer's personalized **For you** value.
 3. Choose an activity and outing time.
 4. Try the recommendation and rate it afterward.
@@ -22,7 +22,9 @@ The app now includes home-screen metadata and branded icons for a more app-like 
 
 The background is selected from Open-Meteo's **current live weather code** each time weather is loaded or refreshed:
 
-- `0–2` — clear or partly cloudy → `public/backgrounds/clear.webp`
+- `0–1` — clear/mainly clear → a stable daily rotation of Cornell clear-sky scenes
+- `2` — partly cloudy → the author's Cornell observatory photograph
+- clear daylight around 6–8 PM → the author's Cornell sunset photograph when conditions support it
 - `3`, `45`, `48` — overcast or fog → `public/backgrounds/cloudy.webp`
 - `51–67`, `80–82`, `95–99` — drizzle, rain, showers, or thunderstorm → `public/backgrounds/rain.webp`
 - `71–77`, `85–86` — snow or snow showers → `public/backgrounds/snow.webp`
@@ -38,6 +40,9 @@ The project uses a relative Vite base, so the same source build works locally, a
 - The explanation panel separates air temperature, official feels-like temperature, and Layer's dress-for recommendation.
 - Mobile horizontal drift is blocked with document-level overflow and pan-only touch handling.
 - Email links return through the real static file `auth-callback.html`, avoiding GitHub Pages route 404s.
+- The callback now uses a same-origin tab handoff: when the original Layer tab is still open, it accepts the verification URL and finishes sign-in there. If the browser or email app prevents that handoff, the callback finishes safely in the newly opened tab instead.
+- Email submission now has a dedicated **Check your email** state with a one-tap handoff to the user's preferred mail app.
+- Returning users can sign in directly from onboarding; a restored seeded profile skips the setup questions.
 - Before testing email sign-in, add `https://amgazal.github.io/Layer/auth-callback.html` to Supabase **Authentication → URL Configuration → Redirect URLs**.
 
 ## Run locally

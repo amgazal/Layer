@@ -6,12 +6,14 @@
 2. In Supabase → Authentication → URL Configuration, set:
    - Site URL: `https://amgazal.github.io/Layer/`
    - Redirect URL: `https://amgazal.github.io/Layer/auth-callback.html`
-3. Open Layer in a private tab and request an email link.
-4. Open the link on the same device and browser that requested it.
-5. Confirm the profile panel says the profile is synced to the account.
-6. Test the page on one iPhone and one Android device by scrolling vertically and
+3. Open Layer in a private tab and request an email link. Confirm the dedicated **Check your email** screen appears.
+4. Keep the original Layer tab open, then open the email link on the same device/browser.
+5. Confirm the original Layer tab receives the sign-in when the browser allows it, and that a visible success message appears. If the browser opens a separate context, confirm the new-tab fallback still signs in successfully.
+6. Sign out or use a second private browser, return to onboarding, choose **Sign in**, and confirm a saved account restores without re-answering setup.
+7. Test the page on one iPhone and one Android device by scrolling vertically and
    swiping slightly sideways; the page should not move horizontally.
-7. Confirm a 69° → 69° display has no warmer/cooler badge.
+8. Confirm a 69° → 69° display has no warmer/cooler badge.
+9. During clear, partly-cloudy, and evening conditions, confirm the new Cornell photographs match the reported condition and keep text readable.
 
 ## During the pilot
 

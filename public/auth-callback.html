@@ -6,20 +6,110 @@
     <meta name="theme-color" content="#112033" />
     <title>Signing in to Layer…</title>
     <style>
-      *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#112033;color:#fff;font-family:system-ui,sans-serif}
+      *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:#112033;color:#fff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
       body{min-height:100vh;display:grid;place-items:center;padding:24px;text-align:center}
-      main{max-width:360px}span{display:inline-block;width:28px;height:28px;border:3px solid rgba(255,255,255,.25);border-top-color:#f2bd4c;border-radius:50%;animation:spin .8s linear infinite}
-      p{color:rgba(255,255,255,.78)}@keyframes spin{to{transform:rotate(360deg)}}
+      main{width:min(390px,100%);padding:30px 24px;border:1px solid rgba(255,255,255,.12);border-radius:28px;background:rgba(255,255,255,.07);box-shadow:0 24px 80px rgba(0,0,0,.28)}
+      .spinner{display:inline-block;width:30px;height:30px;border:3px solid rgba(255,255,255,.22);border-top-color:#f2bd4c;border-radius:50%;animation:spin .8s linear infinite}
+      h1{margin:18px 0 8px;font-size:28px}p{margin:0;color:rgba(255,255,255,.76);line-height:1.55}.done{display:none}.check{width:46px;height:46px;margin:auto;border-radius:50%;display:grid;place-items:center;background:#2d8c61;font-weight:900;font-size:25px}
+      button{margin-top:20px;width:100%;min-height:48px;border:0;border-radius:14px;background:#f2bd4c;color:#112033;font-weight:800;font-size:15px;cursor:pointer}
+      @keyframes spin{to{transform:rotate(360deg)}}
     </style>
   </head>
   <body>
-    <main role="status" aria-live="polite"><span aria-hidden="true"></span><h1>Opening Layer</h1><p>Finishing your sign-in…</p></main>
+    <main aria-live="polite">
+      <section id="working">
+        <span class="spinner" aria-hidden="true"></span>
+        <h1>Finishing your sign-in</h1>
+        <p>Returning your Layer account to the tab you started from…</p>
+      </section>
+      <section id="done" class="done">
+        <div class="check" aria-hidden="true">✓</div>
+        <h1>You're all set</h1>
+        <p>Your original Layer tab is finishing the sign-in. You can return to it now.</p>
+        <button type="button" id="close">Close this tab</button>
+      </section>
+    </main>
     <script>
       (() => {
-        const destination = new URL("./", window.location.href);
-        destination.search = window.location.search;
-        destination.hash = window.location.hash;
-        window.location.replace(destination.href);
+        const CHANNEL = "layer-auth-handoff-v1";
+        const STORAGE_KEY = "layer:auth-handoff";
+        const current = new URL(window.location.href);
+        const handoff = current.searchParams.get("layer_handoff") === "1";
+        const nonce = current.searchParams.get("layer_nonce") || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+
+        function rootDestination(url) {
+          const dest = new URL("./", url);
+          const params = new URLSearchParams(url.search);
+          params.delete("layer_handoff");
+          params.delete("layer_nonce");
+          dest.search = params.toString() ? `?${params.toString()}` : "";
+          dest.hash = url.hash;
+          return dest.href;
+        }
+
+        function continueHere() {
+          try {
+            sessionStorage.setItem("layer:auth-success-pending", "1");
+            sessionStorage.setItem("layer:auth-handoff-nonce", nonce);
+          } catch {}
+          window.location.replace(rootDestination(current));
+        }
+
+        // The original Layer tab deliberately navigates here with handoff=1.
+        // In that tab we simply preserve the Supabase auth code/hash and return
+        // to the app root where supabase-js consumes it.
+        if (handoff) {
+          continueHere();
+          return;
+        }
+
+        let channel = null;
+        let acknowledged = false;
+        let completed = false;
+        const handoffUrl = new URL(current.href);
+        handoffUrl.searchParams.set("layer_handoff", "1");
+        handoffUrl.searchParams.set("layer_nonce", nonce);
+        const payload = { type: "layer-auth-handoff", nonce, url: handoffUrl.href, at: Date.now() };
+
+        const showDone = () => {
+          document.getElementById("working").style.display = "none";
+          document.getElementById("done").style.display = "block";
+        };
+
+        try {
+          channel = new BroadcastChannel(CHANNEL);
+          channel.onmessage = (event) => {
+            const data = event.data || {};
+            if (data.nonce !== nonce) return;
+            if (data.type === "layer-auth-ack") acknowledged = true;
+            if (data.type === "layer-auth-complete") {
+              completed = true;
+              showDone();
+            }
+          };
+          channel.postMessage(payload);
+        } catch {}
+
+        // Storage events are a fallback for browsers that suspend BroadcastChannel
+        // delivery to a background tab.
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch {}
+
+        // If the original tab cannot accept the handoff, never strand the user:
+        // finish authentication in this tab instead.
+        setTimeout(() => {
+          if (!acknowledged && !completed) continueHere();
+        }, 3200);
+
+        // If the old tab accepted the handoff but cannot report completion, keep
+        // the page useful rather than spinning forever.
+        setTimeout(() => {
+          if (acknowledged && !completed) showDone();
+        }, 10000);
+
+        document.getElementById("close").addEventListener("click", () => {
+          window.close();
+          setTimeout(() => { window.location.href = rootDestination(current); }, 150);
+        });
       })();
     </script>
   </body>

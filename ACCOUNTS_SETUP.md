@@ -105,5 +105,12 @@ set/add:
 For a comparison repository, add its callback too, for example:
 `https://amgazal.github.io/Layer-accounts-ready/auth-callback.html`.
 
-The email link must be opened in the same browser/device where it was requested
-because the app uses Supabase PKCE authentication.
+For the most reliable PKCE flow, open the email link on the same browser/device
+where it was requested. Layer now attempts a same-origin handoff back to the
+original open Layer tab. Browsers and email apps do not allow a website to
+guarantee that an existing tab receives focus, so when handoff is unavailable
+the callback completes sign-in in the newly opened tab instead.
+
+The onboarding screen also exposes **Sign in** for returning users. That path
+uses `shouldCreateUser: false` for email OTP, so a mistyped or unknown email does
+not silently create an empty account that looks like a lost profile.

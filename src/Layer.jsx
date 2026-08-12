@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Sun, Cloud, CloudRain, CloudSnow, CloudDrizzle, CloudFog, CloudSun,
   Wind, Zap, Snowflake, Droplets, Check, Flame, MapPin, RefreshCw,
-  Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight,
+  Umbrella, ChevronDown, Footprints, Timer, Car, TrendingUp, X, ArrowRight, ArrowLeft,
   Bike, Clock3, AlertTriangle, UserRound, CircleHelp, Moon, CloudMoon,
   HardDrive, RotateCcw, Mail, LogOut, ShieldCheck
 } from "lucide-react";
@@ -54,17 +54,33 @@ const ACTIVE_RAIN_REFRESH_MS = 2 * 60 * 1000;
 const ASSET_BASE = import.meta.env.BASE_URL;
 const BACKGROUNDS = {
   clear: `${ASSET_BASE}backgrounds/clear.webp`,
+  clearCampus: `${ASSET_BASE}backgrounds/clear-campus.webp`,
+  partlyCampus: `${ASSET_BASE}backgrounds/partly-campus.webp`,
+  sunsetCampus: `${ASSET_BASE}backgrounds/sunset-campus.webp`,
   clearNight: `${ASSET_BASE}backgrounds/clear-night.webp`,
   cloudy: `${ASSET_BASE}backgrounds/cloudy.webp`,
   rain: `${ASSET_BASE}backgrounds/rain.webp`,
   snow: `${ASSET_BASE}backgrounds/snow.webp`,
 };
 
-// A clear night gets its own star-field photograph rather than a dimmed daytime
-// sky, so night actually looks like night instead of a darkened afternoon.
-function sceneSource(category, isDay) {
+// Keep the scene stable for a whole day while still giving repeat users some
+// visual variety. Weather always wins first: rain, snow and overcast keep their
+// dedicated scenes; clear/partly-cloudy conditions can rotate among the user's
+// own Cornell photographs.
+function sceneSource(category, isDay, rawCode = 0, when = new Date()) {
   if (category === "clear" && !isDay) return BACKGROUNDS.clearNight;
-  return BACKGROUNDS[category];
+  if (category !== "clear") return BACKGROUNDS[category];
+
+  const code = Number(rawCode);
+  const hour = when.getHours();
+
+  // A warm sunset photograph is only used while Open-Meteo still reports
+  // daylight, so Layer never shows a sunset in the middle of the night.
+  if (hour >= 18 && hour <= 20) return BACKGROUNDS.sunsetCampus;
+  if (code === 2) return BACKGROUNDS.partlyCampus;
+
+  // Mainly-clear / clear days alternate between two Cornell scenes by date.
+  return when.getDate() % 2 === 0 ? BACKGROUNDS.clearCampus : BACKGROUNDS.clear;
 }
 const RAIN_VIDEO = `${ASSET_BASE}backgrounds/rain-loop.mp4`;
 
@@ -465,6 +481,54 @@ function LoadingScreen() {
   );
 }
 
+
+function EmailSentView({ email, onBack }) {
+  const address = String(email || "").trim();
+
+  const openEmailApp = () => {
+    // There is no browser-standard "open inbox" URL. mailto: hands off to the
+    // user's preferred mail app without assuming Gmail, Outlook, or Apple Mail.
+    window.location.href = "mailto:";
+  };
+
+  return (
+    <div className="email-sent-view" role="status" aria-live="polite">
+      <div className="email-sent-head">
+        <button type="button" className="email-sent-back" aria-label="Use a different email" onClick={onBack}>
+          <ArrowLeft size={20} strokeWidth={2.4} />
+        </button>
+        <strong>Email sent</strong>
+        <span aria-hidden="true" />
+      </div>
+
+      <div className="email-sent-art" aria-hidden="true">
+        <div className="email-sent-orbit" />
+        <div className="email-sent-envelope">
+          <Mail size={34} strokeWidth={1.8} />
+          <span><Check size={15} strokeWidth={3} /></span>
+        </div>
+      </div>
+
+      <h3>Check your email</h3>
+      <p className="email-sent-copy">
+        We sent a secure Layer sign-in link to <strong>{address}</strong>.
+      </p>
+
+      <button type="button" className="email-open-btn" onClick={openEmailApp}>
+        <Mail size={18} strokeWidth={2.3} /> Open email app
+      </button>
+
+      <p className="email-sent-tip">
+        Keep this Layer tab open. When you tap the link, Layer will hand the sign-in back to this tab when your browser allows it.
+      </p>
+
+      <button type="button" className="email-change-btn" onClick={onBack}>
+        Use a different email
+      </button>
+    </div>
+  );
+}
+
 /**
  * Account controls inside the profile panel.
  *
@@ -476,12 +540,25 @@ function LoadingScreen() {
  * identity already exists, and sync.js falls back to signing in, after which
  * the app adopts the cloud profile.
  */
-function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
+function AccountSection({ auth, cloudState, ratingCount, onEnableCloud, intent = "link" }) {
   const providers = availableProviders();
   const [mode, setMode] = useState(null);        // null | "email"
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(null);        // provider key while redirecting
   const [status, setStatus] = useState(null);    // { kind, text }
+  const [sentEmail, setSentEmail] = useState(null);
+
+  useEffect(() => {
+    if (!sentEmail || typeof document === "undefined") return undefined;
+    const bodyOverflow = document.body.style.overflow;
+    const htmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = bodyOverflow;
+      document.documentElement.style.overflow = htmlOverflow;
+    };
+  }, [sentEmail]);
 
   const signedIn = auth.status === "permanent";
   const cloudOn = cloudState === "active" || cloudState === "connecting";
@@ -506,7 +583,7 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
     setStatus(null);
     const ready = await prepareCloud();
     if (!ready) { setBusy(null); return; }
-    const res = await startProviderAuth(provider, { mode: "link", ...opts });
+    const res = await startProviderAuth(provider, { mode: intent, ...opts });
     if (!res.ok) {
       setBusy(null);
       setStatus({ kind: "error", text: res.error });
@@ -519,13 +596,11 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
     setStatus(null);
     const ready = await prepareCloud();
     if (!ready) { setBusy(null); return; }
-    const res = await sendEmailLink(email, { mode: "link" });
+    const res = await sendEmailLink(email, { mode: intent });
     setBusy(null);
     if (res.ok) {
-      setStatus({
-        kind: "sent",
-        text: `Check ${email.trim()} and open the link on this device. Once confirmed, Layer will sync this profile automatically.`,
-      });
+      setSentEmail(email.trim());
+      setStatus(null);
       setMode(null);
     } else {
       setStatus({ kind: "error", text: res.error });
@@ -545,6 +620,20 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
         <div className="account-head"><ShieldCheck size={17} strokeWidth={2.2} /><span>Account</span></div>
         <p className="account-copy">Account sign-in is not configured in this build. Your profile is still saved on this device.</p>
       </div>
+    );
+  }
+
+  if (sentEmail && typeof document !== "undefined") {
+    return createPortal(
+      <div className="email-sent-overlay">
+        <div className="email-sent-modal">
+          <EmailSentView
+            email={sentEmail}
+            onBack={() => { setSentEmail(null); setMode("email"); setStatus(null); }}
+          />
+        </div>
+      </div>,
+      document.body,
     );
   }
 
@@ -570,11 +659,13 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
 
   return (
     <div className="account-block">
-      <div className="account-head"><ShieldCheck size={17} strokeWidth={2.2} /><span>Sign in to sync your profile</span></div>
+      <div className="account-head"><ShieldCheck size={17} strokeWidth={2.2} /><span>{intent === "signin" ? "Sign in to restore your profile" : "Sign in to sync your profile"}</span></div>
       <p className="account-copy">
-        {ratingCount > 0
-          ? `Save your ${ratingCount} rating${ratingCount === 1 ? "" : "s"} and personalization, then restore them on another device.`
-          : "Signing in saves this profile to your account and makes it available on your other devices."}
+        {intent === "signin"
+          ? "Use the email or account you previously linked to Layer. Your saved personalization will load automatically."
+          : ratingCount > 0
+            ? `Save your ${ratingCount} rating${ratingCount === 1 ? "" : "s"} and personalization, then restore them on another device.`
+            : "Signing in saves this profile to your account and makes it available on your other devices."}
       </p>
 
       <div className="account-providers">
@@ -624,112 +715,173 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud }) {
 
       {status && <p className={`account-status ${status.kind}`} role={status.kind === "error" ? "alert" : "status"} aria-live="polite">{status.text}</p>}
       <p className="account-fine">
-        No password required. Signing in turns on account sync automatically. You can keep using Layer on this device without an account.
+        No password required. Signing in turns on account sync automatically.
       </p>
     </div>
   );
 }
 
-function Onboarding({ onDone, cloudAvailable = true }) {
+function Onboarding({
+  onDone,
+  cloudAvailable = true,
+  auth,
+  cloudState,
+  onEnableCloud,
+  notice = null,
+}) {
   const [climate, setClimate] = useState(null);
   const [tol, setTol] = useState(null);
   const [allowCloud, setAllowCloud] = useState(false);
+  const [showSignIn, setShowSignIn] = useState(false);
   const canContinue = Boolean(climate && tol);
+
+  useEffect(() => {
+    if (auth?.status === "permanent") setShowSignIn(false);
+  }, [auth?.status]);
 
   return (
     <div className="lyr ob-wrap">
       <style>{css}</style>
       <div
         className="ob-scene"
-        style={{ backgroundImage: `url(${BACKGROUNDS.clear})` }}
+        style={{ backgroundImage: `url(${BACKGROUNDS.clearCampus})` }}
         aria-hidden="true"
       />
       <div className="ob-backdrop" aria-hidden="true" />
       <div className="ob-card glass">
-        <div className="ob-brand-row">
-          <div className="ob-mark">Layer</div>
-          <span className="ob-time">30-second setup</span>
-        </div>
-        <h1 className="ob-h">Dress for how it feels to you.</h1>
-        <p className="ob-p">
-          Layer turns Cornell weather into a simple outfit recommendation, then gets better from your ratings.
-        </p>
-
-        <div className="ob-value-strip" aria-label="How Layer works">
-          <span><strong>1</strong> Check the weather</span>
-          <span><strong>2</strong> See what to wear</span>
-          <span><strong>3</strong> Rate it later</span>
-        </div>
-
-        <div className="ob-q">
-          <span className="ob-l">Which climate feels most familiar?</span>
-          <div className="ob-opts">
-            {CLIMATES.map((c) => (
-              <button
-                type="button"
-                key={c.key}
-                aria-pressed={climate === c.key}
-                className={`ob-opt ${climate === c.key ? "on" : ""}`}
-                onClick={() => setClimate(c.key)}
-              >
-                <span className="ob-opt-l">{c.label}</span>
-                <span className="ob-opt-n">{c.note}</span>
-              </button>
-            ))}
+        {notice && (
+          <div className="ob-account-notice" role="status" aria-live="polite">
+            <Check size={16} strokeWidth={2.8} /> <span>{notice}</span>
           </div>
-        </div>
-
-        <div className="ob-q">
-          <span className="ob-l">Compared with other people, you usually feel…</span>
-          <div className="ob-opts ob-opts-row">
-            {TOLERANCE.map((t) => (
-              <button
-                type="button"
-                key={t.key}
-                aria-pressed={tol === t.key}
-                className={`ob-opt ${tol === t.key ? "on" : ""}`}
-                onClick={() => setTol(t.key)}
-              >
-                <span className="ob-opt-l">{t.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {cloudAvailable && (
-          <label className={`ob-backup ${allowCloud ? "on" : ""}`}>
-            <Cloud size={20} strokeWidth={2.1} aria-hidden="true" />
-            <span>
-              <strong>Use anonymous cloud sync</strong>
-              <small>Optional. Mirrors this browser profile; sign in later to restore it on other devices.</small>
-            </span>
-            <input
-              type="checkbox"
-              checked={allowCloud}
-              onChange={(event) => setAllowCloud(event.target.checked)}
-            />
-            <span className="toggle-ui" aria-hidden="true" />
-          </label>
         )}
+        {showSignIn ? (
+          <div className="ob-login-view">
+            <div className="ob-login-head">
+              <button
+                type="button"
+                className="ob-login-back"
+                aria-label="Back to setup"
+                onClick={() => setShowSignIn(false)}
+              >
+                <ArrowLeft size={19} strokeWidth={2.4} />
+              </button>
+              <span>Layer account</span>
+              <span aria-hidden="true" />
+            </div>
+            <h1 className="ob-login-title">Welcome back.</h1>
+            <p className="ob-login-copy">
+              Sign in with the account you linked before. If it has a saved Layer profile, you’ll skip setup and pick up where you left off.
+            </p>
+            <AccountSection
+              auth={auth}
+              cloudState={cloudState}
+              ratingCount={0}
+              onEnableCloud={onEnableCloud}
+              intent="signin"
+            />
+            <button type="button" className="ob-new-user" onClick={() => setShowSignIn(false)}>
+              New to Layer? Set up a profile instead
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="ob-brand-row">
+              <div className="ob-mark">Layer</div>
+              {auth?.status === "permanent" ? (
+                <span className="ob-signed-entry" title={auth.email || "Signed in"}>
+                  <Check size={14} strokeWidth={2.6} />
+                  <span>Signed in</span>
+                </span>
+              ) : cloudAvailable ? (
+                <button type="button" className="ob-signin-entry" onClick={() => setShowSignIn(true)}>
+                  <UserRound size={15} strokeWidth={2.3} />
+                  <span>Sign in</span>
+                </button>
+              ) : null}
+            </div>
 
-        <div className="ob-privacy">
-          No account is required. Layer uses Cornell’s fixed campus location—not your phone’s GPS.
-          Signing in automatically turns on account sync so your profile can be restored on another device.
-        </div>
+            <h1 className="ob-h">Dress for how it feels to you.</h1>
+            <p className="ob-p">
+              Layer turns Cornell weather into a simple outfit recommendation, then gets better from your ratings.
+            </p>
 
-        <button
-          type="button"
-          className="ob-go"
-          disabled={!canContinue}
-          onClick={() => onDone(climate, tol, cloudAvailable && allowCloud)}
-        >
-          See my recommendation <ArrowRight size={16} strokeWidth={2.6} />
-        </button>
-        <p className="ob-note">
-          {cloudAvailable && allowCloud
-            ? "Anonymous sync is on. Add an account later for cross-device recovery."
-            : "Your profile will stay on this device. You can sign in or enable anonymous sync later in Profile."}
-        </p>
+            <div className="ob-value-strip" aria-label="How Layer works">
+              <span><strong>1</strong> Check the weather</span>
+              <span><strong>2</strong> See what to wear</span>
+              <span><strong>3</strong> Rate it later</span>
+            </div>
+
+            <div className="ob-q">
+              <span className="ob-l">Which climate feels most familiar?</span>
+              <div className="ob-opts">
+                {CLIMATES.map((c) => (
+                  <button
+                    type="button"
+                    key={c.key}
+                    aria-pressed={climate === c.key}
+                    className={`ob-opt ${climate === c.key ? "on" : ""}`}
+                    onClick={() => setClimate(c.key)}
+                  >
+                    <span className="ob-opt-l">{c.label}</span>
+                    <span className="ob-opt-n">{c.note}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="ob-q">
+              <span className="ob-l">Compared with other people, you usually feel…</span>
+              <div className="ob-opts ob-opts-row">
+                {TOLERANCE.map((t) => (
+                  <button
+                    type="button"
+                    key={t.key}
+                    aria-pressed={tol === t.key}
+                    className={`ob-opt ${tol === t.key ? "on" : ""}`}
+                    onClick={() => setTol(t.key)}
+                  >
+                    <span className="ob-opt-l">{t.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {cloudAvailable && (
+              <label className={`ob-backup ${allowCloud ? "on" : ""}`}>
+                <Cloud size={20} strokeWidth={2.1} aria-hidden="true" />
+                <span>
+                  <strong>Use anonymous cloud sync</strong>
+                  <small>Optional. Mirrors this browser profile; sign in later to restore it on other devices.</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={allowCloud}
+                  onChange={(event) => setAllowCloud(event.target.checked)}
+                />
+                <span className="toggle-ui" aria-hidden="true" />
+              </label>
+            )}
+
+            <div className="ob-privacy">
+              No account is required. Layer uses Cornell’s fixed campus location—not your phone’s GPS.
+            </div>
+
+            <button
+              type="button"
+              className="ob-go"
+              disabled={!canContinue}
+              onClick={() => onDone(climate, tol, cloudAvailable && allowCloud)}
+            >
+              See my recommendation <ArrowRight size={16} strokeWidth={2.6} />
+            </button>
+
+            <p className="ob-note">
+              {cloudAvailable && allowCloud
+                ? "Anonymous sync is on. Add an account later for cross-device recovery."
+                : "Your profile stays on this device unless you choose sync later."}
+            </p>
+          </>
+        )}
       </div>
     </div>
   );
@@ -750,6 +902,7 @@ export default function Layer() {
   const [cycling, setCycling] = useState(false);
   const [askBlame, setAskBlame] = useState(null);
   const [toast, setToast] = useState(null);
+  const [accountNotice, setAccountNotice] = useState(null);
   // A brand-new tester has not been outside yet, so the rating controls stay
   // behind one deliberate tap. This prevents accidental day-one feedback from
   // training the model before the user has actually tried a recommendation.
@@ -777,6 +930,81 @@ export default function Layer() {
   // Account identity (anonymous vs signed in), used by the profile panel.
   const [auth, setAuth] = useState({ status: "none", email: null, provider: null, signedInAt: 0 });
   useEffect(() => subscribeAuth((a) => { if (mounted.current) setAuth(a); }), []);
+
+  // Best-effort email-link handoff. Email apps commonly open links in a new
+  // browser tab and web pages are not allowed to force-focus an existing tab.
+  // When the original Layer tab is still open, the callback broadcasts the
+  // Supabase auth URL and this tab takes over the verification instead.
+  useEffect(() => {
+    const channelName = "layer-auth-handoff-v1";
+    const storageKey = "layer:auth-handoff";
+    let channel = null;
+    let navigating = false;
+
+    const acceptHandoff = (data) => {
+      if (navigating || data?.type !== "layer-auth-handoff" || !data?.url) return;
+      try {
+        const target = new URL(data.url, window.location.href);
+        if (target.origin !== window.location.origin || !target.pathname.endsWith("/auth-callback.html")) return;
+        navigating = true;
+        try { channel?.postMessage({ type: "layer-auth-ack", nonce: data.nonce }); } catch {}
+        window.location.replace(target.href);
+      } catch {}
+    };
+
+    try {
+      channel = new BroadcastChannel(channelName);
+      channel.onmessage = (event) => acceptHandoff(event.data);
+    } catch {}
+
+    const onStorage = (event) => {
+      if (event.key !== storageKey || !event.newValue) return;
+      try {
+        const data = JSON.parse(event.newValue);
+        if (Date.now() - Number(data.at || 0) < 2 * 60 * 1000) acceptHandoff(data);
+      } catch {}
+    };
+    window.addEventListener("storage", onStorage);
+
+    // Covers a callback that arrived while this tab was briefly suspended.
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
+      if (saved && Date.now() - Number(saved.at || 0) < 15000) acceptHandoff(saved);
+    } catch {}
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      try { channel?.close(); } catch {}
+    };
+  }, []);
+
+  useEffect(() => {
+    if (auth.status !== "permanent") return;
+    let pending = false;
+    let nonce = null;
+    try {
+      pending = sessionStorage.getItem("layer:auth-success-pending") === "1";
+      nonce = sessionStorage.getItem("layer:auth-handoff-nonce");
+    } catch {}
+    if (!pending) return;
+
+    setAccountNotice(auth.email
+      ? `Signed in as ${auth.email}. Your Layer profile is synced.`
+      : "Signed in successfully. Your Layer profile is synced.");
+
+    if (nonce) {
+      try {
+        const channel = new BroadcastChannel("layer-auth-handoff-v1");
+        channel.postMessage({ type: "layer-auth-complete", nonce });
+        channel.close();
+      } catch {}
+    }
+    try {
+      sessionStorage.removeItem("layer:auth-success-pending");
+      sessionStorage.removeItem("layer:auth-handoff-nonce");
+      localStorage.removeItem("layer:auth-handoff");
+    } catch {}
+  }, [auth.status, auth.email]);
 
   useEffect(() => {
     const updateClock = () => setNow(new Date());
@@ -900,7 +1128,7 @@ export default function Layer() {
           if (cloudModel.seeded) {
             setModel(cloudModel);
             await storageSet(MODEL_KEY, JSON.stringify(cloudModel));
-            setToast("Signed in — your saved profile is now on this device.");
+            setAccountNotice("Signed in — your saved Layer profile is ready.");
             return;
           }
         }
@@ -910,7 +1138,7 @@ export default function Layer() {
           if (current?.seeded) pushModel(current, totalObservations(current));
           return current;
         });
-        setToast("Signed in — this profile is now saved to your account.");
+        setAccountNotice("Signed in — this profile is now saved to your account.");
       } catch {
         /* offline: local profile stands, reconciliation retries on next load */
       }
@@ -1541,8 +1769,25 @@ export default function Layer() {
     return () => clearTimeout(id);
   }, [toast]);
 
+  useEffect(() => {
+    if (!accountNotice) return;
+    const id = setTimeout(() => setAccountNotice(null), 5200);
+    return () => clearTimeout(id);
+  }, [accountNotice]);
+
   if (!ready) return <LoadingScreen />;
-  if (!model.seeded) return <Onboarding onDone={seed} cloudAvailable={cloudState !== "local"} />;
+  if (!model.seeded) {
+    return (
+      <Onboarding
+        onDone={seed}
+        cloudAvailable={cloudState !== "local"}
+        auth={auth}
+        cloudState={cloudState}
+        onEnableCloud={connectCloud}
+        notice={accountNotice}
+      />
+    );
+  }
   if (!plan || !result) return <LoadingScreen />;
 
   const cond = result.cond;
@@ -1556,7 +1801,7 @@ export default function Layer() {
   );
   const scene = {
     key: liveCond.category,
-    src: sceneSource(liveCond.category, liveIsDay) ?? scenicByCode(liveWeatherCode).src,
+    src: sceneSource(liveCond.category, liveIsDay, liveWeatherCode, now) ?? scenicByCode(liveWeatherCode).src,
   };
   const todayText = humanDate(now);
   const timeText = formatTime(now);
@@ -1586,6 +1831,15 @@ export default function Layer() {
       style={{ "--accent": accent }}
     >
       <style>{css}</style>
+      {accountNotice && (
+        <div className="account-success-toast" role="status" aria-live="polite">
+          <Check size={17} strokeWidth={2.8} />
+          <span>{accountNotice}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setAccountNotice(null)}>
+            <X size={15} strokeWidth={2.4} />
+          </button>
+        </div>
+      )}
       <div
         key={`${scene.key}-${liveIsDay ? "day" : "night"}`}
         className="scene-image"
@@ -2485,7 +2739,49 @@ const css = `
   box-shadow:0 30px 90px rgba(3,10,19,.38);
   -webkit-backdrop-filter:blur(18px); backdrop-filter:blur(18px);
 }
+.ob-account-notice {
+  display:flex; align-items:center; gap:8px; margin:-4px 0 16px; padding:10px 12px;
+  border-radius:14px; background:#EAF6EF; border:1px solid #CDE8D8;
+  color:#2D6F4E; font-size:12.5px; font-weight:700; line-height:1.4;
+}
 .ob-brand-row { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+.ob-signin-entry {
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  min-height:38px; padding:8px 12px; border-radius:999px;
+  border:1px solid #D6E0EA; background:#F5F8FC; color:#33445C;
+  font:750 12.5px 'Instrument Sans',sans-serif; cursor:pointer;
+  transition:background .15s ease, border-color .15s ease, transform .15s ease;
+}
+.ob-signin-entry:hover { background:#FFF; border-color:#BFCEDD; transform:translateY(-1px); }
+.ob-signin-entry:active { transform:translateY(0); }
+.ob-signed-entry {
+  display:inline-flex; align-items:center; gap:6px; min-height:36px; padding:7px 11px;
+  border-radius:999px; background:#EAF6EF; border:1px solid #CEE7D8; color:#2F7752;
+  font:750 12px 'Instrument Sans',sans-serif;
+}
+.ob-login-view { min-height:420px; }
+.ob-login-head {
+  display:grid; grid-template-columns:42px 1fr 42px; align-items:center;
+  gap:10px; margin-bottom:26px; color:#56657B;
+  font:750 12px 'DM Mono',monospace; letter-spacing:.07em; text-transform:uppercase;
+}
+.ob-login-head > span:first-of-type { text-align:center; }
+.ob-login-back {
+  width:42px; height:42px; display:grid; place-items:center; border-radius:50%;
+  border:1px solid #D6E0EA; background:#F5F8FC; color:#23324A; cursor:pointer;
+}
+.ob-login-back:hover { background:#FFF; border-color:#BFCEDD; }
+.ob-login-title {
+  margin:0 0 10px; color:#112033; font-family:'Outfit',sans-serif;
+  font-size:clamp(38px,6vw,54px); line-height:1; letter-spacing:-.035em;
+}
+.ob-login-copy { margin:0 0 18px; color:#5E6D83; font-size:15px; line-height:1.55; max-width:58ch; }
+.ob-login-view .account-block { margin-top:0; background:#F6F8FB; }
+.ob-new-user {
+  width:100%; margin-top:14px; min-height:44px; border:0; background:transparent;
+  color:#5D6D84; font:700 12.5px 'Instrument Sans',sans-serif; cursor:pointer;
+}
+.ob-new-user:hover { color:#23324A; text-decoration:underline; text-underline-offset:3px; }
 .ob-mark {
   font-family:'Outfit',sans-serif; color:#112033; font-size:22px; line-height:1;
   font-weight:850; letter-spacing:-.02em;
@@ -2602,6 +2898,20 @@ const css = `
 .upgrade-sent svg { flex-shrink:0; }
 
 
+.account-success-toast {
+  position:fixed; z-index:2147482500; top:max(14px, env(safe-area-inset-top)); left:50%;
+  transform:translateX(-50%); width:min(520px, calc(100% - 28px));
+  display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px;
+  padding:12px 13px; border-radius:16px; background:rgba(238,249,242,.98);
+  border:1px solid #CBE5D6; color:#245E42; box-shadow:0 16px 45px rgba(6,20,33,.22);
+  font:700 13px 'Instrument Sans',sans-serif; backdrop-filter:blur(12px);
+}
+.account-success-toast > svg { color:#3A9664; }
+.account-success-toast button {
+  width:30px; height:30px; display:grid; place-items:center; border:0; border-radius:50%;
+  background:transparent; color:#4D6B5B; cursor:pointer;
+}
+.account-success-toast button:hover { background:#DCEFE4; }
 .profile-trigger { position:relative; }
 .profile-status-dot {
   position:absolute; right:4px; bottom:4px; width:9px; height:9px; border-radius:50%;
@@ -2678,6 +2988,64 @@ const css = `
 .account-status.error { color:#B4462F; }
 .account-status.sent, .account-status.ok { color:#2F855A; }
 .account-fine { margin:12px 0 0; color:#8490A2; font-size:11.5px; line-height:1.45; }
+.email-sent-overlay {
+  --ink:#112033;
+  position:fixed; inset:0; z-index:2147483600; width:100%; height:100vh; height:100dvh;
+  display:grid; place-items:center; padding:24px; background:rgba(7,16,29,.92);
+  font-family:'Instrument Sans',system-ui,sans-serif; overflow:auto; overscroll-behavior:contain;
+}
+.email-sent-modal {
+  width:min(440px,100%); border-radius:28px; background:#F8FAFC; color:#112033;
+  box-shadow:0 28px 90px rgba(0,0,0,.38); overflow:hidden;
+}
+.email-sent-view { padding:22px; text-align:center; color:#112033; }
+.email-sent-head {
+  display:grid; grid-template-columns:44px 1fr 44px; align-items:center;
+  margin-bottom:18px; color:#243349;
+}
+.email-sent-head strong { font-family:'Outfit',sans-serif; font-size:17px; }
+.email-sent-back {
+  width:42px; height:42px; display:grid; place-items:center; border-radius:50%;
+  border:1px solid #D8E1EB; background:#FFF; color:#23324A; cursor:pointer;
+}
+.email-sent-back:hover { background:#F1F5F9; }
+.email-sent-art {
+  position:relative; width:132px; height:112px; margin:2px auto 12px;
+  display:grid; place-items:center;
+}
+.email-sent-orbit {
+  position:absolute; width:108px; height:108px; border-radius:50%;
+  background:
+    radial-gradient(circle at 68% 30%, rgba(242,189,76,.9) 0 13%, transparent 14%),
+    linear-gradient(145deg, #19314D, #7C285F);
+  opacity:.95;
+}
+.email-sent-envelope {
+  position:relative; z-index:1; width:86px; height:62px; border-radius:15px;
+  display:grid; place-items:center; background:#FFF; color:#34445B;
+  border:1px solid rgba(17,32,51,.10); box-shadow:0 16px 32px rgba(17,32,51,.18);
+}
+.email-sent-envelope > span {
+  position:absolute; right:-8px; bottom:-8px; width:28px; height:28px; border-radius:50%;
+  display:grid; place-items:center; background:#3B9B68; color:#FFF;
+  border:3px solid #F8FAFC;
+}
+.email-sent-view h3 { margin:0 0 7px; font-family:'Outfit',sans-serif; font-size:27px; }
+.email-sent-copy { margin:0 auto; max-width:38ch; color:#5E6D83; font-size:14px; line-height:1.5; }
+.email-sent-copy strong { color:#33445C; word-break:break-word; }
+.email-open-btn {
+  width:100%; min-height:50px; margin-top:18px; border:0; border-radius:15px;
+  display:flex; align-items:center; justify-content:center; gap:9px;
+  background:#112033; color:#FFF; font:800 14px 'Instrument Sans',sans-serif; cursor:pointer;
+  box-shadow:0 10px 24px rgba(17,32,51,.18);
+}
+.email-open-btn:hover { background:#263A52; }
+.email-sent-tip { margin:13px auto 0; max-width:44ch; color:#7A8799; font-size:11.5px; line-height:1.5; }
+.email-change-btn {
+  margin-top:8px; min-height:38px; border:0; background:transparent; color:#526D91;
+  font:700 12px 'Instrument Sans',sans-serif; cursor:pointer;
+}
+.email-change-btn:hover { text-decoration:underline; text-underline-offset:3px; }
 .first-rate { margin-top:4px; }
 .first-rate-copy { margin:0; font-size:14px; line-height:1.5; color:#43516A; }
 .first-rate-go { display:inline-flex; align-items:center; gap:8px; margin-top:13px; padding:12px 16px; border-radius:14px; border:none; cursor:pointer; background:#23324A; color:#FFF; font-family:'Instrument Sans', sans-serif; font-size:14px; font-weight:600; }
@@ -2868,7 +3236,24 @@ label:has(input:focus-visible) {
   }
   .ob-card { margin-top:max(8px, env(safe-area-inset-top)); padding:22px 17px; border-radius:26px; }
   .ob-brand-row { margin-bottom:15px; }
+  .ob-signin-entry { min-height:36px; padding:7px 10px; font-size:12px; }
   .ob-time { font-size:9.5px; min-height:27px; }
+  .ob-login-view { min-height:0; }
+  .ob-login-head { margin-bottom:20px; }
+  .ob-login-title { font-size:40px; }
+  .ob-login-copy { font-size:14px; }
+  .ob-login-view .account-block { padding:14px; }
+  .email-sent-overlay {
+    place-items:stretch; padding:max(12px, env(safe-area-inset-top)) 0 0;
+    background:#101923;
+  }
+  .email-sent-modal {
+    width:100%; min-height:calc(100dvh - max(12px, env(safe-area-inset-top)));
+    border-radius:28px 28px 0 0; display:grid; align-content:start;
+  }
+  .email-sent-view { padding:22px 20px calc(24px + env(safe-area-inset-bottom)); }
+  .email-sent-art { width:126px; height:112px; margin-top:24px; }
+  .email-sent-view h3 { font-size:25px; }
   .ob-h { font-size:43px; }
   .ob-p { font-size:15px; margin-bottom:18px; }
   .ob-value-strip { grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; margin-bottom:22px; }

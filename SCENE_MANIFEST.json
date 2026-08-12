@@ -28,5 +28,23 @@
     "width": 893,
     "height": 1130,
     "bytes": 14726
+  },
+  "clear-campus": {
+    "filename": "clear-campus.webp",
+    "width": 1350,
+    "height": 1800,
+    "bytes": 296134
+  },
+  "partly-campus": {
+    "filename": "partly-campus.webp",
+    "width": 1800,
+    "height": 1350,
+    "bytes": 453748
+  },
+  "sunset-campus": {
+    "filename": "sunset-campus.webp",
+    "width": 1800,
+    "height": 1350,
+    "bytes": 55240
   }
 }
