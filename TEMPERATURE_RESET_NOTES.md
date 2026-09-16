@@ -6,7 +6,8 @@ The hero now keeps each number distinct:
 
 - **Temperature** when leaving now: the current air temperature.
 - **Forecast** when a later departure is selected: the forecast air temperature at that departure time.
-- **For you**: Layer's personalised dress-for temperature, still calculated from apparent temperature, weather exposure, activity, outing duration, and the learned model.
+- **For you**: Layer's personalised dress-for temperature, still calculated from apparent temperature, weather exposure, activity, the riding modifier, and the learned model. Outing duration
+  affects the forecast window and weather-protection guidance.
 
 The standard apparent/feels-like value remains available in the outfit explanation instead of being duplicated in the hero.
 
@@ -17,7 +18,8 @@ The profile panel now includes a confirmed **Reset personalization** action. It 
 - setup answers and seeded offsets;
 - ratings and learned model history;
 - pending feedback in the local upload queue;
-- the user's profile, model state, and feedback events in Supabase when reachable.
+- the user's profile and feedback events in Supabase when reachable, while replacing
+  the model snapshot with an empty model.
 
 After reset, Layer returns to the two-question setup. A pending-reset marker prevents stale cloud data from restoring the old model if the device is temporarily offline.
 

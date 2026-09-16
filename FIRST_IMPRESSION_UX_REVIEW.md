@@ -2,7 +2,7 @@
 
 ## Verdict before this pass
 
-The weather experience already had a strong visual idea, useful personalization, and unusually good rain handling. The first visit still did not fully meet a polished consumer-app standard because three trust questions were harder than they needed to be:
+This review identified three sources of confusion in the first visit:
 
 1. The onboarding action could enable cloud behavior without making the choice prominent enough.
 2. Account recovery, cloud sync, and local storage were explained in overlapping places.
@@ -33,10 +33,11 @@ The weather experience already had a strong visual idea, useful personalization,
 - Kept the imagery weather-specific while making the product feel unmistakably local rather than like a reskinned generic weather app.
 
 ### Main experience
-- Kept the weather-source credit out of the hero and profile, but restored it as a compact page footer because the data licence requires linked attribution.
+- Restored linked weather-source attribution. It now appears in **Profile & account → About Layer** and remains in the README.
 - Renamed the lower diagnostic section to **Comfort factors** and added a one-line explanation.
 - Aligned None / Low / Medium / High labels directly with the four meter segments.
-- Kept the weather summary, personalized temperature, outfit, activity, and planner as the first-screen hierarchy.
+- Kept the weather summary and outfit ahead of secondary controls. The current mobile
+  order places the planner before activity selection.
 - Preserved the real rain footage, night mode, campus shower detection, and departure-time logic.
 
 ### Mobile and install experience

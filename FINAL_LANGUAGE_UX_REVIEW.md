@@ -19,7 +19,8 @@
 
 - Removed the Open-Meteo and estimate note from the main content grid, where it could appear near the top on mobile.
 - Weather attribution now appears quietly at the bottom of the profile panel.
-- The estimate and severe-weather guidance now appears during onboarding, where users first learn how Layer works.
+- The current onboarding explains the fixed campus location and optional storage choices.
+  Forecast limitations are documented in the README.
 
 ## Better feedback flow
 

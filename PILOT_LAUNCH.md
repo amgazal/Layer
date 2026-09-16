@@ -1,154 +1,59 @@
-# Pilot Launch Runbook
+# Pilot runbook
 
-Everything needed to go from this repo to 20 testers, in order. Budget about
-90 minutes. Do not skip step 5 — it is the go/no-go gate.
+This is a plan for a small Cornell campus pilot, not a record of completed testing or adoption.
 
----
+## Configure and verify
 
-## 1. Create the Supabase project (~10 min)
-1. supabase.com → new project, region near Ithaca (US East).
-2. Save the database password somewhere safe.
-3. Wait for provisioning to finish.
+1. Follow [Backend setup](BACKEND_SETUP.md), including all migrations and the row-level security check.
+2. Enable anonymous sign-ins and configure email using [Sign-in setup](ACCOUNTS_SETUP.md). The current interface supports accounts; there is no account-upgrade feature flag to enable.
+3. Set the local `.env` values and GitHub Actions secrets described in those guides.
+4. Run `npm run verify`, then `npm run smoke` against a development Supabase project. The smoke script creates test users and data and prints cleanup SQL.
+5. Deploy through the included Pages workflow and run the checks below on the deployed build.
 
-## 2. Create the tables and security (~10 min)
-In **SQL Editor**, run these in order, one at a time:
+The email callback for the existing deployment is `https://amgazal.github.io/Layer/auth-callback.html`. Allow that URL in Supabase, plus `http://localhost:5173/auth-callback.html` for local testing.
 
-1. `supabase/schema.sql` — tables, RLS policies, base constraints
-2. `supabase/migrations/20260728_backend_hardening.sql` — idempotency + validation
-3. `supabase/migrations/20260729_profile_reset.sql` — event delete policy
-4. `supabase/migrations/20260802_pilot_security.sql` — **pilot hardening**
+## Device checks
 
-Then confirm RLS is on everywhere. This must return three rows, all `true`:
+- [ ] Complete onboarding with sync off; confirm personalization persists locally.
+- [ ] Enable anonymous sync; confirm a `model_state` row appears in Supabase.
+- [ ] Rate an outing with sync enabled; confirm an `events` row appears.
+- [ ] Disconnect while the app is open, rate again, reconnect, and check that queued feedback uploads without reopening the app.
+- [ ] Close the app after rating and confirm the local calibration survives reopening.
+- [ ] Reset personalization; confirm cloud profile and event rows are deleted and the model snapshot is empty.
+- [ ] Check text readability in daylight and at night; clear nights should use the night photograph.
+- [ ] Save a profile to an account and restore it on a second device.
+- [ ] Sign out and confirm the app remains usable with local calibration.
+
+Use the [10-user pilot checklist](PILOT_10_USER_CHECKLIST.md) for additional mobile layout and email-handoff checks. Its title describes a planned cohort, not a verified user count.
+
+## Participant instructions
+
+Ask participants to use Layer for two weeks and rate recommendations after their outings. Explain that ratings marked “did not follow” are recorded but do not update the comfort model.
+
+Participants can keep their profile on the device or opt into cloud sync. Cloud-enabled feedback is stored for analysis. Anonymous use does not require an email; choosing email or provider sign-in adds an account identity. Weather requests use fixed campus coordinates, not the participant's GPS location.
+
+## Check incoming feedback
+
+Run these queries in the Supabase SQL Editor with an administrative role:
 
 ```sql
-select tablename, rowsecurity
-from pg_tables
-where schemaname = 'public'
-  and tablename in ('profiles','model_state','events');
-```
-
-If any row is `false`, stop and fix before continuing.
-
-## 3. Enable anonymous sign-in (~2 min)
-**Authentication → Providers → Anonymous sign-ins → enable.**
-
-Without this the app still works, but stays local-only and your study collects
-nothing.
-
-Leave email/password disabled. The account-upgrade UI is feature-flagged off
-(`ENABLE_ACCOUNT_UPGRADE = false`), which is correct for the pilot.
-
-## 3b. Sign-in (optional, ~5–20 min)
-Testers can use Layer anonymously; signing in is what moves a profile to a
-**second device**. Email links need only the redirect URLs below and are a
-perfectly good pilot configuration.
-
-**Authentication → URL Configuration** (required even for email links):
-- **Site URL**: your deployed URL, e.g. `https://amgazal.github.io/weather/`
-- **Redirect URLs**: that URL, plus `http://localhost:5173/` for dev
-
-Then **enable manual identity linking** (Authentication → Providers settings) so
-an anonymous profile can be *saved* into an account rather than left behind.
-
-Google and Cornell take about 15 more minutes; Apple needs a paid developer
-account. Full steps and the honest limits are in **ACCOUNTS_SETUP.md**.
-
-## 4. Wire up the keys (~10 min)
-**Project Settings → API**, copy the Project URL and the `anon` `public` key.
-
-Local:
-```bash
-cp .env.example .env      # paste both values
-npm install
-npm run verify            # regressions + unit tests + build
-```
-
-Deployed: repo → **Settings → Secrets and variables → Actions** → add
-`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as **secrets**, then push to
-`main`. If you configured Google/Cornell/Apple, also add `VITE_AUTH_PROVIDERS`
-(e.g. `google,cornell`) as a repository **variable** — it is not a secret.
-
-> The anon key is *designed* to ship in frontend code. It is safe **because**
-> RLS restricts every user to their own rows. Never put the `service_role` key
-> in the app, in the repo, or in a GitHub secret used by the frontend build.
-
-## 5. GO / NO-GO: verify security end to end (~5 min)
-```bash
-npm run smoke
-```
-
-Use a throwaway/dev project if you can. This signs in two anonymous users and
-proves the whole security posture:
-
-- anonymous sign-in works
-- an event uploads, and a duplicate upload does **not** create a second row
-- **user B cannot read user A's rows** (RLS isolation)
-- **user B cannot forge a row owned by user A** (ownership trigger)
-- oversized (200 KB) and non-object calibration payloads are **rejected**
-- stored events **cannot be edited** after the fact
-- `created_at` is **server-generated**, not client-supplied
-- a user **can delete their own rows** (privacy reset)
-- garbage values (`duration = -500`, `activity = "airplane"`) are rejected
-
-**All checks must pass before you send the link.** If any fail, the most likely
-cause is a migration that did not run — re-run step 2 and try again.
-
-## 6. Personal shakedown (~20 min, do this the day before)
-On your own phone, on the real deployed URL:
-
-- [ ] Complete onboarding; confirm a `model_state` row appears in Supabase
-- [ ] Rate one outing; confirm an `events` row appears
-- [ ] Turn on airplane mode, rate again, turn wifi back on — the queued event
-      should upload on its own within a minute *without* reopening the app
-- [ ] Force-quit right after rating, reopen — calibration should be intact
-- [ ] Profile → reset personalization → confirm cloud rows are cleared
-- [ ] Check it in both a bright room and at night
-- [ ] Confirm the night sky background appears after dark (not a dimmed day photo)
-- [ ] Save your profile to an account, open it on a second device, and confirm
-      your rating count and calibration came across
-- [ ] Sign out and confirm the app still works anonymously
-
-## 7. Send it (start of week)
-Suggested message to testers:
-
-> This is Layer — it tells you what to actually wear, and learns how weather
-> feels to *you* specifically. Two things that make or break it:
-> **rate your outfit after you go out** (that is how it learns), and **be honest
-> when you didn't follow it** — "No" is genuinely useful data, not a failure.
-> It's anonymous: no name, no email, no precise location. Takes 30 seconds to
-> set up. Give it about a week before judging the recommendations.
-
-Ask them to use it for **two weeks** and rate whenever they remember.
-
-## 8. Mid-pilot health check (day 3)
-```sql
--- Are events actually arriving?
 select count(*) as events, count(distinct user_id) as users
 from public.events;
 
--- Who has gone quiet? (nudge them once, gently)
 select user_id, count(*) as ratings, max(created_at) as last_seen
 from public.events
 group by user_id
 order by last_seen desc;
 ```
 
-If `users` is well under 20, the likely cause is people choosing "keep
-everything on this device" — which is their right, and their data legitimately
-stays out of the study.
+These counts cover uploaded events only. Device-only participants, queued uploads, and deleted histories are not represented fully.
 
-## 9. The result (end of pilot)
-Run the query at the bottom of `supabase/schema.sql` (uncomment it). It returns
-the sentence that goes on your résumé:
+## Analyze the pilot
 
-> Across N users, the just-right rate rose from X% to Y%.
+The commented query at the end of [schema.sql](supabase/schema.sql) compares early and recent “just right” rates for users with at least five eligible ratings. It excludes outings marked “did not follow.” Early and recent windows can overlap, and weather and activity may change between them.
 
-Outings where the user answered "No" to following the recommendation are
-excluded, since those do not reflect the recommendation's accuracy.
+Report the actual sample size and rates, including unchanged or lower rates. Do not describe this comparison alone as proof that the model improved recommendations. The repository contains no completed pilot dataset or results.
 
----
+## Disable cloud in a new deployment
 
-## Rollback
-If something is badly wrong mid-pilot, you do **not** need to take the app down:
-remove the two GitHub secrets and re-deploy. The app falls back to local-only,
-keeps working for everyone, and stops writing to the database until you fix it.
+Remove the two Supabase build secrets and rebuild to serve a device-only app. Existing open tabs and previously downloaded builds may still have the old configuration; redeployment does not revoke database access for those clients.

@@ -1,139 +1,62 @@
-# Layer — Weather You Can Wear
+# Layer
 
-Layer is a Cornell campus-focused weather application that converts forecast data into personalized comfort and clothing recommendations.
+Layer turns Cornell campus weather into clothing recommendations based on a saved comfort profile. It adjusts for how warm or cold you usually feel, what you plan to do outside, and feedback from previous outings.
 
+[Demo](https://amgazal.github.io/Layer/)
 
-## Current first-impression release
+## What it does
 
-This release uses Cornell/Ithaca-specific clear and overcast scenes and tightens the experience around one path:
+A forecast alone does not tell you what to wear for a walk across campus. Layer starts with two questions about your climate background and temperature tolerance, then combines Open-Meteo forecasts with your profile to suggest layers. After an outing, you can rate the recommendation as too cold, just right, or too warm.
 
-1. New users complete a two-question setup; returning users can sign in from onboarding and skip it.
-2. See the current temperature beside Layer's personalized **For you** value.
-3. Choose an activity and outing time.
-4. Try the recommendation and rate it afterward.
-5. Optionally save the profile with passwordless email or a configured provider.
+## Key features
 
-Layer is local-first. It works without an account and saves personalization on the current device. Optional **anonymous cloud sync** mirrors that browser profile online but cannot recover it after the browser session is lost. Signing in with email or a configured provider automatically turns on **account sync**, which makes the profile recoverable on another device. Account, storage, sync status, learning details, and reset controls live together under **Profile & account**.
+- Compare air temperature with a personalized **For you** dress-for temperature and see why an outfit was suggested.
+- Plan a departure and outing duration, with adjustments for standing, walking, quick trips, and riding a bike or scooter.
+- See rain, snow, wind, and temperature-change guidance for the outing, with backgrounds that follow current campus conditions.
+- Save personalization on the device without an account, or sign in to restore it on another device when Supabase is configured.
+- Review recent ratings and learned adjustments, or reset personalization from **Profile & account**.
 
-The app now includes home-screen metadata and branded icons for a more app-like mobile launch. The detailed design review is in `FIRST_IMPRESSION_UX_REVIEW.md`.
+## Engineering
 
+- **A feedback model separate from React.** [model.js](src/lib/model.js) blends cold, mild, and warm temperature offsets using Gaussian weights. Corrections shrink as evidence accumulates and stay within fixed bounds. Ratings marked “mostly followed” have less influence; “just right” and “did not follow” are logged without changing the model.
+- **Weather signals at different time scales.** The app combines current conditions, 15-minute forecasts, and hourly precipitation probability. [weather.js](src/lib/weather.js) converts precipitation totals into hourly rates and checks rain signals before dry weather codes. A five-point campus request provides a fallback when nearby points report rain.
+- **Local storage with optional background sync.** The comfort profile loads from local storage first. With cloud sync enabled, feedback enters a bounded local outbox and uploads with retries and unique event IDs to avoid duplicate rows. Pending resets block restoration of an old cloud profile.
+- **Account recovery on a static site.** Supabase handles email links and configured OAuth providers. A real [callback page](public/auth-callback.html) supports GitHub Pages and passes the PKCE code to an open Layer tab through `BroadcastChannel`, with a storage-event fallback.
+- **Database ownership and validation.** The [schema](supabase/schema.sql) separates setup answers, model snapshots, and feedback events. Row-level security restricts access by user; migrations add server-assigned ownership and timestamps, payload limits, and an event insert throttle.
+- **Checks before deployment.** Vitest covers calibration, weather classification, and temperature-display arithmetic. Source-level regression checks and a production build run alongside the tests in the [GitHub Pages workflow](.github/workflows/deploy.yml).
 
-## Live scenic backgrounds
+## Tech stack
 
-The background is selected from Open-Meteo's **current live weather code** each time weather is loaded or refreshed:
+- **Frontend:** React 19, JavaScript, CSS, Vite, Lucide icons
+- **Weather:** Open-Meteo forecast API
+- **Optional backend:** Supabase Auth and PostgreSQL
+- **Testing and deployment:** Vitest, Node.js check scripts, GitHub Actions, GitHub Pages
 
-- `0–1` — clear/mainly clear → a stable daily rotation of Cornell clear-sky scenes
-- `2` — partly cloudy → the author's Cornell observatory photograph
-- clear daylight around 6–8 PM → the author's Cornell sunset photograph when conditions support it
-- `3`, `45`, `48` — overcast or fog → `public/backgrounds/cloudy.webp`
-- `51–67`, `80–82`, `95–99` — drizzle, rain, showers, or thunderstorm → `public/backgrounds/rain.webp`
-- `71–77`, `85–86` — snow or snow showers → `public/backgrounds/snow.webp`
+## Running locally
 
-The outing planner still changes the clothing recommendation for a future departure, but it does not overwrite the live background. This keeps the page visually grounded in what is happening on campus now.
-
-The project uses a relative Vite base, so the same source build works locally, at `https://amgazal.github.io/Layer/`, or in a comparison repository without changing asset paths.
-
-
-## Pilot fixes — August 3, 2026
-
-- The warmer/cooler badge now uses the exact arithmetic shown in the hero. If **Temperature** and **For you** are both 69°, the badge is hidden.
-- The explanation panel separates air temperature, official feels-like temperature, and Layer's dress-for recommendation.
-- Mobile horizontal drift is blocked with document-level overflow and pan-only touch handling.
-- Email links return through the real static file `auth-callback.html`, avoiding GitHub Pages route 404s.
-- The callback now uses a same-origin tab handoff: when the original Layer tab is still open, it accepts the verification URL and finishes sign-in there. If the browser or email app prevents that handoff, the callback finishes safely in the newly opened tab instead.
-- Email submission now has a dedicated **Check your email** state with a one-tap handoff to the user's preferred mail app.
-- Returning users can sign in directly from onboarding; a restored seeded profile skips the setup questions.
-- Before testing email sign-in, add `https://amgazal.github.io/Layer/auth-callback.html` to Supabase **Authentication → URL Configuration → Redirect URLs**.
-
-## Run locally
+Use Node.js 22.12 or newer in the Node 22 line, matching the major version used in CI.
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-## Deploy
+Open the local URL printed by Vite. No environment file is needed for device-only use; live weather requires an internet connection.
 
-Push the complete project to the `main` branch. The included GitHub Actions workflow builds and deploys the Vite app to GitHub Pages. In **Settings → Pages**, keep the source set to **GitHub Actions**.
+For accounts and cloud sync, follow [Backend setup](BACKEND_SETUP.md) and [Sign-in setup](ACCOUNTS_SETUP.md). Copy `.env.example` to `.env`, supply your Supabase URL and public anon key, and restart Vite. Leave those variables unset to run without Supabase.
 
+```bash
+npm run verify    # source regression checks, unit tests, production build
+npm run preview   # serve the production build locally
+```
 
-## White-screen fix
+`npm run smoke` checks a configured development Supabase project. It requires `.env`, creates test users and rows, and prints cleanup SQL; it is separate from `verify`.
 
-This version adds explicit loading guards before rendering weather-dependent values. It prevents the initial React render from reading `result.personalShift` before the weather calculation exists.
+## Scope and limitations
 
+Layer uses fixed Cornell campus coordinates, Fahrenheit, and campus time. Its weather inputs are modelled forecasts, so local conditions can differ. A recent cache can be shown while weather refreshes; when a request fails without a usable cache, the interface shows labelled sample data. There is no service worker for loading the app offline.
 
-## Mobile-first hierarchy
-
-On screens below 980px, the interface now renders in this order:
-
-1. Live weather summary and personalized temperature
-2. Clothing recommendation
-3. Activity selection
-4. Future-outing planner
-5. Comfort threats, feedback, and calibration
-
-This prevents the clothing/activity cards from appearing above the main weather information on phones.
-
-
-## Current-time and personalization update
-
-- The header shows the device's live local time, updates every 10 seconds, and refreshes immediately when the app regains focus.
-- “Leaving now” displays the actual current-to-end time window instead of rounded hourly forecast timestamps.
-- The app uses current Open-Meteo conditions for an outing beginning now, while still using hourly data for the outing range.
-- Personalization is explained briefly by default; technical cold/mild/warm adjustments are available under “View learning details.”
-
-## Recommendation transparency and alert polish
-
-- The clothing card includes a collapsed **Why this outfit?** explanation based on the official feels-like temperature, personal adjustment, selected activity, wind/wet/sun exposure, and outing length.
-- Weather-change alerts now state the expected temperature difference and the time it may occur.
-- Rain alerts show the peak precipitation probability before the outing ends, and snow receives its own warning.
-- Accessibility improvements include visible keyboard focus, larger touch behaviour, reduced-motion support, and a higher-contrast mode.
-
-
-## Mobile comfort-meter fix
-
-This build fixes the comfort-threat level bars on narrow screens. The meter uses a four-column CSS grid with an explicit full width, so the None / Low / Medium / High segments remain visible on phones.
-
-
-## Night and inclusivity update
-
-- The site now uses Open-Meteo `is_day` data to dim the scenic background automatically at night.
-- Sun exposure is always `None` after daylight ends and no longer affects the personal temperature calculation at night.
-- Clothing visuals use neutral category badges instead of gender-coded emoji garments.
-- Clothing wording has been revised to use category-based, inclusive recommendations.
-- Comfort threat meters now show no filled bar for a `None` threat level.
-
-
-## Final reliability and presentation fixes
-
-- Automatic night mode uses Open-Meteo `is_day` and dims the scenic photography.
-- Direct-sun effects are never applied, displayed, or offered as a feedback cause at night.
-- Daytime-only sun-protection clothing is removed after sunset.
-- Clothing labels and garment markers are gender-neutral.
-- Cloud sync is explicit opt-in; a new visitor is not anonymously signed in before choosing.
-- Failed authentication can retry without a reload.
-- The feedback outbox removes only the batch that actually uploaded, preventing an overlapping event from being lost.
-- Optional passwordless account saving is available from the profile panel; the app still works without an account.
-
-
-## Live rain accuracy
-
-Layer combines current, 15-minute, and hourly Open-Meteo data. The 15-minute feed drives current rain intensity and short outings, while hourly probability supports longer planning. Weather refreshes automatically every five minutes, or every two minutes during active rain.
-
-
-## Live rain footage
-
-When Layer detects live rain, it replaces the synthetic CSS streaks with a muted looping H.264 rain clip. The static rainy image remains available as a poster and accessibility fallback.
-
-
-## Final rain-detection hardening
-
-Layer now evaluates measured rain before dry cloud labels, so a positive 15-minute
-precipitation signal cannot be hidden by an `Overcast` weather code. A conservative
-five-point campus rain probe also catches narrow showers that one forecast grid cell
-may miss. Pure weather-classification tests live in `src/lib/weather.test.js`.
-
-The main comparison shows the actual **Temperature** now (or **Forecast** for a later departure) beside Layer’s personalized **For you** value. The standard feels-like range is summarized in the outing planner and explained under **Why this outfit?**. Freshness stays visible beside the outing summary. Weather attribution is kept inside **Profile & account → About Layer**, away from the first-screen weather experience.
+Anonymous cloud sync depends on the browser session and cannot recover a lost session. Signing into an existing account restores its saved profile; independently trained device profiles are not merged. The repository includes a [pilot runbook](PILOT_LAUNCH.md), but no published pilot results or measured recommendation-accuracy improvement.
 
 ## Attribution
 

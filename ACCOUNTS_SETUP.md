@@ -1,116 +1,53 @@
-# Sign-in setup (email · Google · Cornell · Apple)
+# Sign-in setup
 
-Signing in is **optional for testers** and off the critical path: the app works
-anonymously, and cloud sync already backs a profile up. Signing in is what lets
-that profile move to a **second device**.
+Accounts are optional. Device-only profiles stay in local storage; anonymous cloud sync mirrors a browser profile but cannot recover a lost anonymous session. Email or provider sign-in enables account recovery on another device.
 
-## The one idea that makes this safe
-When Supabase attaches an identity to an anonymous user, **the user id does not
-change**. Every existing `model_state` and `events` row already points at that
-id, so saving a profile needs **no data migration** — the account simply becomes
-permanent in place.
+Complete [Backend setup](BACKEND_SETUP.md) first.
 
-The app therefore runs two flows through the same buttons:
+## Email and callback URLs
 
-| Situation | What happens |
-|---|---|
-| Anonymous, first save | `linkIdentity` / `updateUser` → same id, ratings carry over |
-| Second device, account exists | link fails → falls back to `signInWithOAuth` / `signInWithOtp`, then the app **adopts the cloud profile** |
+Enable the email provider in Supabase Authentication and configure email delivery. Leave `VITE_AUTH_PROVIDERS` blank for email-only sign-in; the frontend shows **Continue with email** whenever Supabase is configured.
 
----
+In Supabase's authentication URL configuration, use:
 
-## 1. Email links — works immediately, no extra provider setup
-Nothing beyond the existing Supabase email configuration is required. Leave
-`VITE_AUTH_PROVIDERS` blank and testers still get **Continue with email**.
+| Setting | Value for the existing Pages deployment |
+| --- | --- |
+| Site URL | `https://amgazal.github.io/Layer/` |
+| Allowed redirect URL | `https://amgazal.github.io/Layer/auth-callback.html` |
+| Local redirect URL | `http://localhost:5173/auth-callback.html` |
 
-For the first save, request the email link and open it in the same browser where
-the anonymous profile was created. On a second device, request a new link on
-that device and open that link there. This keeps the user's intention clear and
-avoids relying on a link opened in the wrong browser.
+For another deployment or local port, allow its exact `auth-callback.html` URL. The callback is a real static file so GitHub Pages can serve it without route rewrites.
 
-**Authentication → URL Configuration**
-- **Site URL**: `https://amgazal.github.io/Layer/`
-- **Redirect URL**: `https://amgazal.github.io/Layer/auth-callback.html`
-- For local testing, also add `http://localhost:5173/auth-callback.html`
+Request and open each email link in the same browser and device so the PKCE verifier is available. The callback attempts to pass the code to the original open Layer tab; if that tab is unavailable, it returns to the app with the code to finish there. It cannot force the browser to focus an existing tab.
 
-This step is required for every provider, including email. The callback URL must
-be in Supabase's redirect allow list or Supabase falls back to the configured
-Site URL.
+## Identity linking
 
-## 2. Enable identity linking (needed to *save* an anonymous profile)
-**Authentication → Providers → (settings) → enable manual linking.**
+Enable manual identity linking in Supabase Authentication settings. Linking an email or OAuth identity to an anonymous user preserves the user ID and existing rows. See [Supabase's anonymous sign-in guide](https://supabase.com/docs/guides/auth/auth-anonymous) for provider requirements.
 
-Without it, `linkIdentity` fails and the app falls back to signing in — which
-still works, but the anonymous profile on that device is left behind instead of
-being carried into the account.
+| User action | Implementation |
+| --- | --- |
+| Save an anonymous profile | `updateUser` for email or `linkIdentity` for OAuth |
+| Sign in from onboarding | `signInWithOtp` or `signInWithOAuth` |
+| Linking fails | Attempt normal sign-in |
 
-## 3. Google — free, ~15 minutes
-1. Google Cloud Console → new project → **APIs & Services → Credentials**
-2. **Create OAuth client ID → Web application**
-3. Authorised redirect URI: `https://<your-ref>.supabase.co/auth/v1/callback`
-4. Copy the client ID and secret into **Supabase → Authentication → Providers → Google**
-5. Set `VITE_AUTH_PROVIDERS=google`
+The returning-user email path uses `shouldCreateUser: false`. A successful sign-in to an existing account restores its cloud profile; independent local histories are not merged.
 
-## 4. Cornell — Google with a domain hint
-Cornell email runs on Google Workspace, so "Continue with Cornell" is the Google
-provider with `hd=cornell.edu` passed through. **No separate provider needed.**
+## Optional providers
 
-Set `VITE_AUTH_PROVIDERS=google,cornell` (google must be listed too).
+For Google, configure a web OAuth client with the Supabase callback URI `https://<your-ref>.supabase.co/auth/v1/callback`. Enter its client ID and secret in the Supabase Google provider settings, then set `VITE_AUTH_PROVIDERS=google`.
 
-> **Honest limitation:** `hd` is a *hint* that pre-selects the Cornell account
-> chooser. It is not enforcement — someone could still finish with a personal
-> Gmail. That is fine for this pilot. Real enforcement would need either a
-> server-side check on the email domain or Cornell NetID SAML, and SAML needs
-> Supabase Pro plus approval from Cornell IT.
+To also show **Continue with Cornell**, use `VITE_AUTH_PROVIDERS=google,cornell`. This uses the Google provider with a `cornell.edu` domain hint. It does not enforce Cornell-only access or provide NetID SSO.
 
-## 5. Apple — only if you have a paid developer account
-Requires the **Apple Developer Program ($99/year)**: a Service ID, a key, and
-the return URL `https://<your-ref>.supabase.co/auth/v1/callback`. Configure it
-in **Supabase → Authentication → Providers → Apple**, then add `apple` to
-`VITE_AUTH_PROVIDERS`.
+For Apple, configure the Apple provider in Supabase with the required developer credentials and callback, then add `apple` to `VITE_AUTH_PROVIDERS`. Only list providers that have been configured; the variable controls which buttons appear, not provider setup itself.
 
-The button stays hidden until then, so nothing breaks if you skip it.
+## Deployment and checks
 
----
+For GitHub Pages, add `VITE_AUTH_PROVIDERS` as a repository **variable**, alongside the two Supabase repository secrets described in [Backend setup](BACKEND_SETUP.md). Rebuild after changing these values.
 
-## Deploying the setting
-`VITE_AUTH_PROVIDERS` is not a secret. Add it as a **repository variable**
-(repo → Settings → Secrets and variables → Actions → **Variables** tab), not a
-secret. Leaving it unset ships email-only sign-in, which is a perfectly good
-pilot configuration.
+Before sharing a configured build:
 
-## What to verify before shipping
-- [ ] Save a profile on your laptop with email; confirm `profiles.is_anonymous`
-      flips to `false` in Supabase
-- [ ] On the phone, request a new link for the same email and open it there; confirm your ratings appear
-- [ ] Confirm the rating count on the phone matches the laptop
-- [ ] Sign out; confirm the app keeps working anonymously and the local profile
-      is still intact
-
-## Known limitation, stated plainly
-If a tester trains a profile anonymously on **two** devices and then signs both
-into the same account, one history wins rather than merging. The proper fix is
-rebuilding the model from the central `events` log, which belongs with a fuller
-accounts feature rather than this pilot.
-
-## GitHub Pages email callback (required)
-
-This build uses a real static callback page so email links do not land on a
-GitHub Pages 404. In Supabase, open **Authentication → URL Configuration** and
-set/add:
-
-- Site URL: `https://amgazal.github.io/Layer/`
-- Redirect URL: `https://amgazal.github.io/Layer/auth-callback.html`
-
-For a comparison repository, add its callback too, for example:
-`https://amgazal.github.io/Layer-accounts-ready/auth-callback.html`.
-
-For the most reliable PKCE flow, open the email link on the same browser/device
-where it was requested. Layer now attempts a same-origin handoff back to the
-original open Layer tab. Browsers and email apps do not allow a website to
-guarantee that an existing tab receives focus, so when handoff is unavailable
-the callback completes sign-in in the newly opened tab instead.
-
-The onboarding screen also exposes **Sign in** for returning users. That path
-uses `shouldCreateUser: false` for email OTP, so a mistyped or unknown email does
-not silently create an empty account that looks like a lost profile.
+- Save an anonymous profile with email and confirm the account becomes permanent.
+- On a second device, request a new link for the same account and confirm the saved ratings and adjustments load.
+- Check the original-tab handoff and the fallback with the original tab closed.
+- Confirm returning-user sign-in can restore a profile before onboarding.
+- Sign out and confirm local use remains available. The current implementation keeps the local calibration on sign-out.

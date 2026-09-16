@@ -4,4 +4,4 @@
 - Manual refresh forces a fresh rain-video element in addition to refetching weather.
 - The profile icon now opens an accessible profile/settings sheet.
 - The panel explains local storage, anonymous cloud sync, its current limitations, and links to personalization details.
-- Product wording uses “cloud sync” instead of “cloud backup” because cross-device recovery is not yet implemented.
+- Product wording distinguishes anonymous cloud sync from account recovery. Anonymous sync mirrors the browser profile; linked accounts support recovery on another device.
