@@ -52,3 +52,20 @@ it('repeated auth focus events do not restart account restoration',()=>{
   const initial=sync.currentAuth().signedInAt;vi.advanceTimersByTime(1000);
   state.onAuth('SIGNED_IN',{user});expect(sync.currentAuth().signedInAt).toBe(initial);
 });
+it('overlapping event flushes preserve feedback added in flight',async()=>{
+  state.onAuth('INITIAL_SESSION',{user:state.user});
+  let release;state.upsert.mockImplementationOnce(()=>new Promise(r=>release=r));
+  const first=sync.logEvent({outcome:'cold'});
+  await vi.waitFor(()=>expect(state.upsert).toHaveBeenCalledTimes(1));
+  sync.logEvent({outcome:'warm'});
+  const again=sync.flushOutbox();
+  release({error:null});await first;await again;
+  await vi.runOnlyPendingTimersAsync();
+  expect(state.upsert.mock.calls.map(c=>c[0][0].outcome)).toEqual(['cold','warm']);
+  expect(JSON.parse(window.localStorage.getItem('layer:outbox'))).toEqual([]);
+});
+it('queued events are not uploaded under a different account',async()=>{
+  window.localStorage.setItem('layer:outbox',JSON.stringify([{owner:'other-user',client_event_id:'old'}]));
+  await sync.flushOutbox();
+  expect(state.upsert).not.toHaveBeenCalled();
+});

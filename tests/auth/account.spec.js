@@ -10,7 +10,7 @@ test('restoration failure can retry without onboarding or overwriting cloud; sig
   await page.addInitScript(session=>localStorage.setItem('sb-127-auth-token',JSON.stringify(session)),data.session);
   await page.route('**/api.open-meteo.com/**',r=>r.abort());
   let fail=true;
-  await page.route('**/rest/v1/model_state*',r=>fail && r.request().method()==='GET' ? r.fulfill({status:503,json:{message:'Unavailable'}}) : r.continue());
+  await page.route('**/rest/v1/model_state*',r=>fail && r.request().method()==='GET' ? r.fulfill({status:400,json:{message:'Unavailable'}}) : r.continue());
   await page.goto('/');
   await expect(page.getByRole('heading',{name:'Your saved profile couldn’t load'})).toBeVisible();
   await expect(page.getByText('Dress for how it feels to you.')).toHaveCount(0);

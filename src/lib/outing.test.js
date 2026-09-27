@@ -19,7 +19,9 @@ describe('whole outing exposure',()=>{
     expect(two.cooling).toBe(true); expect(two.wearEffective).toBe(69);
   });
   it('explains removable layers for a warming outing',()=>{
-    expect(calculate(weather(Array.from({length:17},(_,i)=>48+i)),240).warming).toBe(true);
+    const result=calculate(weather(Array.from({length:17},(_,i)=>48+i)),240);
+    expect(result.warming).toBe(true);
+    expect(result.wearEffective).toBe(result.departure);
   });
   it.each([20,60,120,240])('does not add a duration penalty in steady weather (%i)',d=>{
     expect(calculate(weather(Array(17).fill(67)),d).effective).toBe(69);

@@ -30,7 +30,7 @@ Use the [10-user pilot checklist](PILOT_10_USER_CHECKLIST.md) for additional mob
 
 Ask participants to use Layer for two weeks and rate recommendations after their outings. Explain that ratings marked “did not follow” are recorded but do not update the comfort model.
 
-Participants can keep their profile on the device or opt into cloud sync. Cloud-enabled feedback is stored for analysis. Anonymous use does not require an email; choosing email or provider sign-in adds an account identity. Weather requests use fixed campus coordinates, not the participant's GPS location.
+Participants can keep their profile on the device or opt into cloud sync. Cloud-enabled feedback is stored for analysis. Anonymous use does not require an email; choosing email or provider sign-in adds an account identity. Weather uses campus coordinates by default; optional precise mode sends a one-shot location to Open-Meteo and never stores it in feedback or profiles.
 
 ## Check incoming feedback
 

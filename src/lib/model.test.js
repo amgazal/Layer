@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   CENTERS, KERNEL, STEP_MAX, PRIOR_N, CLAMP, FACTOR_CLAMP,
   clamp, deepCopy, EMPTY_MODEL, normalizeModel,
-  kernelWeights, pooledOffset, totalObservations, confidence, updateModel,
+  kernelWeights, pooledOffset, totalObservations, confidence, updateModel, seedModel,
 } from "./model";
 
 const fresh = () => deepCopy(EMPTY_MODEL);
@@ -267,5 +267,20 @@ describe('untrusted stored personalization', () => {
   it('never trains temperature or factors from a weather correction', () => {
     const m=fresh();
     expect(updateModel(m,{apparentTemp:50,direction:-1,followed:'yes',blameKey:'wet',weatherCorrected:true})).toEqual(m);
+  });
+});
+
+describe('climate and tolerance seeds',()=>{
+  it.each(['tropical','temperate','cold'])('orders colder/same/warmer tolerance for %s',climate=>{
+    const cold=seedModel(climate,'colder'), same=seedModel(climate,'same'), warm=seedModel(climate,'warmer');
+    expect(cold.seeded).toBe(true);
+    for(const regime of ['cold','mild','warm']) {
+      expect(cold.regime[regime].off).toBe(same.regime[regime].off-3);
+      expect(warm.regime[regime].off).toBe(same.regime[regime].off+3);
+    }
+  });
+  it('starts tropical users warmer in cold weather and ignores invalid setup',()=>{
+    expect(seedModel('tropical','same').regime.cold.off).toBeLessThan(seedModel('cold','same').regime.cold.off);
+    expect(seedModel('mars','same')).toBeNull();
   });
 });

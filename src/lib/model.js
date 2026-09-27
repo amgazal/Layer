@@ -128,3 +128,13 @@ export function updateModel(model, { apparentTemp, direction, blameKey, followed
 
   return next;
 }
+
+export function seedModel(climate, tolerance) {
+  const seeds = { tropical: {cold:-7,mild:-4,warm:1}, temperate:{cold:-1,mild:0,warm:0}, cold:{cold:4,mild:2,warm:-2} };
+  const adjustments = { colder:-3, same:0, warmer:3 };
+  if (!Object.hasOwn(seeds,climate) || !Object.hasOwn(adjustments,tolerance)) return null;
+  const model = deepCopy(EMPTY_MODEL);
+  model.seeded = true;
+  for (const key of Object.keys(CENTERS)) model.regime[key] = {off:clamp(seeds[climate][key]+adjustments[tolerance],-CLAMP,CLAMP),n:.6};
+  return model;
+}

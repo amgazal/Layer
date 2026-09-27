@@ -79,6 +79,8 @@ let authPromise = null;
 let syncGeneration = 0;
 let modelWrite = Promise.resolve();
 let eventWrite = Promise.resolve();
+let outboxAppend = Promise.resolve();
+let outboxRun = null;
 
 export function setCloudPref(allow) {
   lsSet(PREF_KEY, allow ? "on" : "off");
@@ -290,11 +292,22 @@ function writeOutbox(events) {
  * uploaded. Once opted in, each new event is queued first and uploaded second.
  */
 export function logEvent(event) {
-  if (!cloudEnabled || !cloudAllowed()) return;
-  const queued = readOutbox();
-  queued.push({ client_event_id: uuid(), ...event, owner: authInfo.userId });
-  writeOutbox(queued);
-  flushOutbox();
+  if (!cloudEnabled || !cloudAllowed() || hasPendingReset()) return;
+  const generation = syncGeneration;
+  const row = { client_event_id: uuid(), ...event, owner: authInfo.userId };
+  const append = () => {
+    if (generation !== syncGeneration || !cloudAllowed() || hasPendingReset()) return;
+    const queued = readOutbox();
+    queued.push(row);
+    writeOutbox(queued);
+  };
+  // Appending and removing rows use the same cross-tab lock where supported.
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    outboxAppend = navigator.locks.request('layer-feedback-outbox', append);
+    return outboxAppend.then(() => flushOutbox());
+  }
+  append();
+  return flushOutbox();
 }
 
 let flushing = false;
@@ -348,10 +361,12 @@ function attachDeliveryTriggers() {
 attachDeliveryTriggers();
 
 export function flushOutbox() {
+  if (outboxRun) return outboxRun;
   const run = () => performOutboxFlush();
   eventWrite = typeof navigator !== 'undefined' && navigator.locks
     ? navigator.locks.request('layer-feedback-outbox', run) : run();
-  return eventWrite;
+  outboxRun = eventWrite.finally(() => { outboxRun = null; });
+  return outboxRun;
 }
 async function performOutboxFlush() {
   if (!cloudEnabled || !cloudAllowed() || flushing) return;
@@ -414,7 +429,7 @@ export async function resetPersonalizationCloud(emptyModel) {
   cancelRetry();
   writeOutbox([]);
   lsSet(RESET_PENDING_KEY, "1");
-  await Promise.allSettled([modelWrite, eventWrite]);
+  await Promise.allSettled([modelWrite, eventWrite, outboxAppend]);
 
   if (!cloudEnabled) {
     lsRemove(RESET_PENDING_KEY);

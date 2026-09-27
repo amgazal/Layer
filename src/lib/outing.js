@@ -74,12 +74,16 @@ export function outingTemperature(plan, model, activity, cycling) {
   const protective = weighted.slice().sort((a,b) => a.value-b.value).find(p => (accumulated += p.weight) >= total*.25).value;
   const departureWeight = plan.duration <= 20 ? .8 : plan.duration <= 60 ? .5 : .25;
   const representative = departureWeight*temperatures[0] + (1-departureWeight)*protective;
+  const apparentWeighted = weighted.map((p,i) => ({...p,value:plan.points[i].apparent})).sort((a,b)=>a.value-b.value);
+  let apparentWeight = 0;
+  const protectiveApparent = apparentWeighted.find(p => (apparentWeight += p.weight) >= total*.25).value;
+  const representativeApparent = departureWeight*plan.depart.apparent + (1-departureWeight)*protectiveApparent;
   const cooling = temperatures[0] - protective >= 6;
   const warming = temperatures.at(-1) - temperatures[0] >= 6;
-  return { effective: Math.round(representative), departure: Math.round(temperatures[0]),
+  return { representativeApparent, effective: Math.round(representative), departure: Math.round(temperatures[0]),
     protective: Math.round(protective), cooling, warming,
     // For material later cooling, wear the departure outfit and pack insulation.
-    wearEffective: cooling && plan.duration >= 60 ? Math.round(temperatures[0]) : Math.round(representative),
+    wearEffective: (cooling && plan.duration >= 60) || warming ? Math.round(temperatures[0]) : Math.round(representative),
     explanation: cooling ? `Feels like ${Math.round(plan.depart.apparent)}° at departure and as low as ${plan.minApparent}° while you’re out. Bring a layer to add later.`
       : warming ? `Feels like ${Math.round(plan.depart.apparent)}° at departure and ${plan.endApparent}° before you return. Start with a layer you can remove.` : null };
 }

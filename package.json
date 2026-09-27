@@ -11,11 +11,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:regressions": "node scripts/regression-check.mjs",
-    "verify": "npm run check:regressions && npm run test && npm run build",
+    "verify": "npm run check:regressions && npm run test && npm run build && npm run check:security",
     "test:browser": "playwright test",
     "test:integration": "node scripts/local-integration.mjs",
     "test:auth": "node scripts/auth-browser.mjs",
-    "test:production": "playwright test --config=playwright.production.config.js"
+    "test:production": "playwright test --config=playwright.production.config.js",
+    "check:security": "node scripts/security-check.mjs",
+    "smoke:local": "node scripts/local-smoke.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

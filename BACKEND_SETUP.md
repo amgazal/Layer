@@ -10,8 +10,9 @@ Create a Supabase project, then run these files in the SQL Editor in order:
 2. [20260728_backend_hardening.sql](supabase/migrations/20260728_backend_hardening.sql)
 3. [20260729_profile_reset.sql](supabase/migrations/20260729_profile_reset.sql)
 4. [20260802_pilot_security.sql](supabase/migrations/20260802_pilot_security.sql)
+5. [20260927_final_bounds.sql](supabase/migrations/20260927_final_bounds.sql)
 
-The schema includes some earlier migration changes; the migration files are written to allow re-running them. The final migration adds payload constraints, ownership and timestamp triggers, and an event insert throttle.
+The schema includes some earlier migration changes; the migration files are written to allow re-running them. The migrations add payload constraints, ownership and timestamp triggers, an event insert throttle, explicit grants, and numeric/history bounds. The latest migration rejects explicit ownership spoofing. Existing invalid snapshots must be repaired before its constraints can be applied. `20260727_initial.sql` is the baseline used by local Supabase; it mirrors schema.sql and is not an extra hosted setup step.
 
 Confirm that this query returns three rows with `rowsecurity = true`:
 
@@ -72,3 +73,7 @@ Reset clears local personalization and queued feedback, deletes the current user
 ## Pilot analysis
 
 The commented query at the end of [schema.sql](supabase/schema.sql) compares each eligible user's first five and most recent ten followed-outfit ratings, then averages those rates across users. The windows can overlap for short histories. This is a descriptive comparison, not evidence by itself that personalization caused an improvement. No pilot results are included in the repository.
+
+## Local verification
+
+The isolated `supabase/config.toml` project uses ports 55420–55424. Run `supabase start`, `npm run test:integration`, and `npm run test:auth`. These test real local Auth/PostgREST with distinct users; they do not verify hosted configuration. Read [README](README.md) for full commands and [verification report](ENGINEERING_VERIFICATION.md) for results.

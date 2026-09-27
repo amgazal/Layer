@@ -1,64 +1,76 @@
 # Layer
 
-Layer turns Cornell campus weather into clothing recommendations based on a saved comfort profile. It adjusts for how warm or cold you usually feel, what you plan to do outside, and feedback from previous outings.
+Layer turns Cornell/Ithaca weather into clothing guidance based on your comfort profile, activity, and the weather expected during your outing.
 
 [Demo](https://amgazal.github.io/Layer/)
 
-## What it does
+## Weather and trust
 
-A forecast alone does not tell you what to wear for a walk across campus. Layer starts with two questions about your climate background and temperature tolerance, then combines Open-Meteo forecasts with your profile to suggest layers. After an outing, you can rate the recommendation as too cold, just right, or too warm.
+Layer uses Open-Meteo current, 15-minute, and hourly **modeled forecasts**. The [official API documentation](https://open-meteo.com/en/docs#minutely_15) identifies NOAA HRRR as the North American 15-minute source. Precipitation and rain are preceding-15-minute totals; Layer converts them to hourly-equivalent rates. The separate showers field is not a native HRRR 15-minute variable, so that field is requested only in current data. These are not rain-gauge observations or independent weather providers.
 
-## Key features
+Positive precipitation takes priority over dry weather codes. A second, five-point request checks nearby campus precipitation conservatively. Nearby evidence is labeled **Passing shower around campus**, rather than asserting rain at your exact point. Weak isolated signals are ignored. Short localized showers can still be missed by the model; Layer does not offer radar-level or guaranteed real-time detection.
 
-- Compare air temperature with a personalized **For you** dress-for temperature and see why an outfit was suggested.
-- Plan a departure and outing duration, with adjustments for standing, walking, quick trips, and riding a bike or scooter.
-- See rain, snow, wind, and temperature-change guidance for the outing, with backgrounds that follow current campus conditions.
-- Save personalization on the device without an account, or sign in to restore it on another device when Supabase is configured.
-- Review recent ratings and learned adjustments, or reset personalization from **Profile & account**.
+The header and scenic background describe current conditions, even when planning a later departure. Outfit protection and future warnings cover the selected outing.
 
-## Engineering
+- Recent real cached weather can appear immediately while refreshing, with its original timestamp.
+- Weather older than 15 minutes is **Last known conditions**, with age and an outdated-recommendation notice. Age considers both retrieval and provider valid time.
+- Weather older than 24 hours, invalid data, or an uncovered outing window produces **Weather unavailable** with Retry. There is no production sample-weather fallback. The old cache namespace is deliberately ignored because it could contain synthetic data.
+- Visible pages refresh every five minutes, or two during precipitation. Focus/pageshow refresh after 90 seconds of age. Requests coalesce, obsolete requests abort, and timeouts include response decoding. Frequent polling cannot improve an unchanged model run.
 
-- **A feedback model separate from React.** [model.js](src/lib/model.js) blends cold, mild, and warm temperature offsets using Gaussian weights. Corrections shrink as evidence accumulates and stay within fixed bounds. Ratings marked “mostly followed” have less influence; “just right” and “did not follow” are logged without changing the model.
-- **Weather signals at different time scales.** The app combines current conditions, 15-minute forecasts, and hourly precipitation probability. [weather.js](src/lib/weather.js) converts precipitation totals into hourly rates and checks rain signals before dry weather codes. A five-point campus request provides a fallback when nearby points report rain.
-- **Local storage with optional background sync.** The comfort profile loads from local storage first. With cloud sync enabled, feedback enters a bounded local outbox and uploads with retries and unique event IDs to avoid duplicate rows. Pending resets block restoration of an old cloud profile.
-- **Account recovery on a static site.** Supabase handles email links and configured OAuth providers. A real [callback page](public/auth-callback.html) supports GitHub Pages and passes the PKCE code to an open Layer tab through `BroadcastChannel`, with a storage-event fallback.
-- **Database ownership and validation.** The [schema](supabase/schema.sql) separates setup answers, model snapshots, and feedback events. Row-level security restricts access by user; migrations add server-assigned ownership and timestamps, payload limits, and an event insert throttle.
-- **Checks before deployment.** Vitest covers calibration, weather classification, and temperature-display arithmetic. Source-level regression checks and a production build run alongside the tests in the [GitHub Pages workflow](.github/workflows/deploy.yml).
+## Location and condition corrections
 
-## Tech stack
+Campus is the default. **Use my location** explicitly enables a session-only option using one-shot browser geolocation at each weather lookup, never a location watcher. Fixes must be within approximately 8 km of Cornell and report accuracy within 500 m. Otherwise Layer uses campus weather. A valid fix centers the weather request and four nearby probes; there are still only two weather API requests per refresh.
 
-- **Frontend:** React 19, JavaScript, CSS, Vite, Lucide icons
-- **Weather:** Open-Meteo forecast API
-- **Optional backend:** Supabase Auth and PostgreSQL
-- **Testing and deployment:** Vitest, Node.js check scripts, GitHub Actions, GitHub Pages
+Coordinates exist only while performing that lookup and are sent to Open-Meteo as necessary to obtain weather. They are not saved to local storage, Supabase, feedback events, or analytics. Precise-location forecast responses remain in memory and reset on reload. The browser/OS and weather provider have their own permission and request handling.
 
-## Running locally
+**Conditions look wrong?** offers rain, snow, or dry reports. Reports refresh weather, override current presentation/protection for 15 minutes, and never train the comfort model. Feedback in a session with a report is saved without learning or uploading a research event until the report is cleared. No crowdsourcing or third-party analytics is added.
 
-Use Node.js 22.12 or newer in the Node 22 line, matching the major version used in CI.
+## Outing planning and personalization
+
+Choose 20 minutes, one hour, two hours, or a four-hour planning window (the **4+ hrs** button), plus standing, walking, or mostly sheltered travel. Cycling adjusts wind exposure. Longer trips are not given an arbitrary temperature penalty.
+
+The pure [outing module](src/lib/outing.js) samples the full outing using 15-minute data with hourly fallback. Personal offsets, weather sensitivities, activity, cycling, and daylight apply at each point. A time-weighted colder quartile protects against sustained cold without dressing for one extreme reading. Departure has more influence on shorter trips. Material cooling produces **wear now / bring a layer** advice; warming suggests removable layers. Peak rain, wind/gusts, snow and temperature changes also affect guidance. See [algorithm notes](WEATHER_ACCURACY_NOTES.md).
+
+The [comfort model](src/lib/model.js) blends cold/mild/warm regimes with partial pooling, decaying updates, and bounded adjustments. Mostly-followed ratings have reduced weight; just-right and did-not-follow ratings do not retrain. Weather-factor blame routes most of the update to the named sensitivity. Stored models are normalized and bounded before use. These are explainable product heuristics, not scientifically validated clothing recommendations.
+
+## Local storage and optional accounts
+
+No account is required. Setup, calibration and recent ratings stay on the device. Weather still needs a connection; there is no offline service worker.
+
+Optional Supabase sync queues consented feedback with unique IDs, retries failed delivery, and mirrors model snapshots. Queued events are tied to the account that created them and are not reassigned after sign-in. Legacy unowned queued events are withheld. Anonymous accounts cannot recover a lost browser session; link email or a configured OAuth identity for recovery. Signing into an existing account adopts its model; independently trained histories are not merged. Sign-out keeps local calibration and turns cloud sync off.
+
+Model writes are serialized within a tab. Reset waits for in-flight model/event writes, clears application data, and blocks stale restoration while cleanup is pending. A failed account read offers retry instead of treating the account as empty. Simultaneous independent-device calibration remains snapshot-based, not a conflict-free merge.
+
+RLS restricts profiles, model snapshots and events to their owner, including authenticated anonymous users. Explicit grants remove unauthenticated access and event updates. Database checks bound model size, history length, observations, offsets/factors, profile enums and event values. See [backend setup](BACKEND_SETUP.md) and [account setup](ACCOUNTS_SETUP.md). Hosted deployments must apply the latest migration; local tests do not prove a hosted project's configuration.
+
+## Development and verification
+
+React 19, JavaScript, Vite, Lucide, Open-Meteo, optional Supabase. Use Node 22.12+ in the Node 22 line.
 
 ```bash
 npm ci
 npm run dev
+npm audit
+npm run verify                 # source checks, unit tests, production build
+npx playwright install chromium
+npm run test:browser           # intercepted weather; responsive and axe checks
+npm run test:production        # run after build; assets at / and /Layer/
 ```
 
-Open the local URL printed by Vite. No environment file is needed for device-only use; live weather requires an internet connection.
-
-For accounts and cloud sync, follow [Backend setup](BACKEND_SETUP.md) and [Sign-in setup](ACCOUNTS_SETUP.md). Copy `.env.example` to `.env`, supply your Supabase URL and public anon key, and restart Vite. Leave those variables unset to run without Supabase.
+For isolated real Auth/PostgREST integration, with Docker running:
 
 ```bash
-npm run verify    # source regression checks, unit tests, production build
-npm run preview   # serve the production build locally
+npm exec --yes --package=supabase -- supabase start
+npm run test:integration       # two users, RLS, bounds, linking, deduplication
+npm run test:auth              # real account restoration/retry/sign-out in Chromium
+npm run smoke:local            # existing smoke suite against the isolated local stack
+npm exec --yes --package=supabase -- supabase stop
 ```
 
-`npm run smoke` checks a configured development Supabase project. It requires `.env`, creates test users and rows, and prints cleanup SQL; it is separate from `verify`.
+Local tests use project `layer-verification` and ports 55420–55424. The integration suite removes its application rows; the smoke script prints cleanup SQL. Test Auth users remain until removed separately. These commands never target a hosted project. `npm run smoke` remains available for a separately configured development project through `.env`; it is not part of local verification.
 
-## Scope and limitations
-
-Layer uses fixed Cornell campus coordinates, Fahrenheit, and campus time. Its weather inputs are modelled forecasts, so local conditions can differ. A recent cache can be shown while weather refreshes; when a request fails without a usable cache, the interface shows labelled sample data. There is no service worker for loading the app offline.
-
-Anonymous cloud sync depends on the browser session and cannot recover a lost session. Signing into an existing account restores its saved profile; independently trained device profiles are not merged. The repository includes a [pilot runbook](PILOT_LAUNCH.md), but no published pilot results or measured recommendation-accuracy improvement.
+GitHub Actions checks dependencies, units, build and browser behavior. The relative Vite base supports `/` and `/Layer/`; domain migration is out of scope. No production user count or measured accuracy improvement is claimed. See [engineering verification report](ENGINEERING_VERIFICATION.md) for results and remaining checks.
 
 ## Attribution
 
-Weather data from [Open-Meteo](https://open-meteo.com/), used under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Layer adapts the data into personalized outfit guidance. Linked attribution appears in **Profile & account → About Layer**, with the full project attribution retained here.
+Weather data from [Open-Meteo](https://open-meteo.com/), used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Layer adapts the data into personalized outfit guidance. Attribution is also available under Profile & account → About Layer.

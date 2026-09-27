@@ -1,3 +1,5 @@
+> Historical pass; current behavior and verification are documented in [WEATHER_ACCURACY_NOTES.md](WEATHER_ACCURACY_NOTES.md) and [ENGINEERING_VERIFICATION.md](ENGINEERING_VERIFICATION.md). Production sample weather has been removed.
+
 # Final rain-detection and UX pass
 
 ## Root bug fixed
@@ -27,7 +29,7 @@ coordinate.
 ## UX improvements
 - The current interface labels air temperature as `Temperature` or `Forecast`, beside
   the personalized `For you` value.
-- Freshness uses `Updated now`, `Updated N min ago`, cached-age labels, or `Sample data`.
+- Freshness uses `Updated now`, `Updated N min ago`, original cache timestamps, `Last known conditions`, or `Weather unavailable`.
 - Weather condition and refresh status use polite live regions for screen readers.
 - Linked Open-Meteo attribution appears in **Profile & account → About Layer**.
 

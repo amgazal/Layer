@@ -6,7 +6,7 @@
 - Replaced “Make the outer layer wind resistant” with “Choose a rain jacket that also blocks the wind” or “A wind-blocking jacket will help.”
 - Reworded the outfit explanation to use everyday language instead of technical phrases such as “heat loss” and “wind exposure.”
 - Changed the personal adjustment badge from `-5° personal` to a clearer phrase such as `5° cooler for you`.
-- Simplified freshness labels to `Updated now`, `Updated 3 min ago`, `Cached 3 min ago`, or `Sample data`.
+- Simplified freshness labels to `Updated now`, `Updated 3 min ago`, `Last known conditions`, or `Weather unavailable` (updated in the engineering pass).
 
 ## Cleaner recommendation hierarchy
 

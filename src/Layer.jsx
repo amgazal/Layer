@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import {
   CLAMP, clamp, deepCopy, EMPTY_MODEL, normalizeModel,
-  totalObservations, updateModel,
+  totalObservations, updateModel, seedModel,
 } from "./lib/model";
 import {
   classifyWeather,
@@ -110,19 +110,7 @@ const TOLERANCE = [
   { key: "warmer", label: "Usually warmer", adj: 3 },
 ];
 
-function seededModelFromSetup(climateKey, toleranceKey) {
-  const climate = CLIMATES.find((x) => x.key === climateKey);
-  const tol = TOLERANCE.find((x) => x.key === toleranceKey);
-  if (!climate || !tol) return null;
-
-  const next = deepCopy(EMPTY_MODEL);
-  next.seeded = true;
-  for (const key of ["cold", "mild", "warm"]) {
-    next.regime[key].off = clamp(climate.seed[key] + tol.adj, -CLAMP, CLAMP);
-    next.regime[key].n = 0.6;
-  }
-  return next;
-}
+const seededModelFromSetup = seedModel;
 
 const ACTIVITIES = {
   waiting: { label: "Standing", Icon: Timer, adj: -5, hint: "Stop, platform, queue" },
@@ -1515,9 +1503,9 @@ export default function Layer() {
 
     if (cycling) {
       whyLines.push("Cycling makes the air feel windier, so a jacket that blocks wind will help.");
-    } else if (plan.depart.wind >= 12) {
-      whyLines.push(`Wind is around ${plan.depart.wind} mph, which can make exposed areas feel cooler.`);
-    } else if (cond.wet || plan.depart.precip >= 30) {
+    } else if (threats.find(threat => threat.key === "wind")?.level >= 2) {
+      whyLines.push(`Wind or gusts strengthen during this outing, so a wind-blocking layer helps.`);
+    } else if (outingWetLevel > 0) {
       whyLines.push("Rain and damp clothing can make you feel colder, so a water-resistant layer helps.");
     } else if (isDay && cond.clear && base >= 72) {
       whyLines.push("Direct sun can add warmth, especially during a longer walk.");
@@ -1528,6 +1516,7 @@ export default function Layer() {
     if (thermal.explanation) whyLines.splice(1, 0, thermal.explanation);
     return {
       effective,
+      representativeApparent: thermal.representativeApparent,
       band,
       cond,
       threats,
@@ -1576,7 +1565,7 @@ export default function Layer() {
 
     // The calibration math lives in ./lib/model (pure + unit-tested).
     const next = updateModel(withHistory, {
-      apparentTemp: plan.depart.apparent,
+      apparentTemp: result.representativeApparent,
       weatherCorrected: Boolean(correction) || trust !== "recent",
       direction,
       blameKey,
@@ -1588,11 +1577,11 @@ export default function Layer() {
     // Append to the cloud research log — richer than the trimmed local history,
     // and recorded for every outcome including "didn't follow".
     if (!correction && trust === "recent") logEvent({
-      apparent: plan.depart.apparent,
+      apparent: Math.round(plan.depart.apparent),
       effective: result.effective,
-      actual: plan.depart.actual,
-      wind: plan.depart.wind,
-      precip: plan.depart.precip,
+      actual: Math.round(plan.depart.actual),
+      wind: Math.round(plan.depart.wind),
+      precip: Math.round(plan.depart.precip),
       condition: result.cond.label,
       weather_code: plan.depart.code,
       is_day: (plan.depart.isDay ?? wx?.current?.isDay ?? 1) !== 0,
@@ -1794,7 +1783,7 @@ export default function Layer() {
               {result.displayShift !== 0 && (
                 <span className="shift">
                   {temperatureShiftLabel(result.displayShift)}
-                  {ratingCount === 0 && <em className="shift-src"> · from your setup</em>}
+                  {ratingCount === 0 && <em className="shift-src"> · includes your setup</em>}
                 </span>
               )}
             </div>
@@ -1948,7 +1937,7 @@ export default function Layer() {
                 return (
                   <div key={t.key} className={`threat lv-${t.level}`}>
                     <span className="th-l"><T size={16} strokeWidth={2.2} /> {t.label}</span>
-                    <span className="meter">{[1,2,3,4].map((i) => <span key={i} className={`seg ${i <= t.level ? "fill" : ""}`} />)}</span>
+                    <span className="meter" role="img" aria-label={`${t.label}: ${LEVELS[t.level]}`}>{[0,1,2,3].map((i) => <span key={i} className={`seg ${i === t.level && t.level > 0 ? "fill" : ""}`} />)}</span>
                   </div>
                 );
               })}
@@ -2725,7 +2714,7 @@ const css = `
   font-size:12px; font-weight:900;
 }
 .ob-opt-l { display:block; font-size:14px; font-weight:780; line-height:1.25; }
-.ob-opt-n { display:block; margin-top:4px; color:#6D7A90; font-size:11.5px; line-height:1.35; }
+.ob-opt-n { display:block; margin-top:4px; color:#4C5B70; font-size:11.5px; line-height:1.35; }
 .ob-backup {
   display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:12px;
   margin:4px 0 14px; padding:14px 15px; border:1px solid #E1E8F0; border-radius:17px;

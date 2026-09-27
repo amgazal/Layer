@@ -59,6 +59,9 @@ jobs:
           # Optional: comma list, e.g. "google,cornell". Blank = email-only sign-in.
           VITE_AUTH_PROVIDERS: ${{ vars.VITE_AUTH_PROVIDERS }}
 
+      - name: Verify production asset paths
+        run: npm run test:production
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 

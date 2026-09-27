@@ -107,3 +107,37 @@ test('precise location is optional and never stored',async({page,context})=>{
   await page.getByRole('button',{name:'Use campus location',exact:true}).click();
   await expect(page.locator('.campus-line small')).toHaveText('Campus');
 });
+test('manual refresh and simultaneous visibility/focus events share one request pair',async({page})=>{
+  await setup(page);
+  await expect(page.getByText('Wear this',{exact:true})).toBeVisible();
+  await page.clock.fastForward(100_000);
+  await page.unroute('**/api.open-meteo.com/**');
+  let release;const gate=new Promise(r=>release=r);let requests=0;
+  await page.route('**/api.open-meteo.com/**',async r=>{requests++;await gate;await r.fulfill({json:response()});});
+  await page.getByRole('button',{name:'Refresh weather',exact:true}).click();
+  await page.evaluate(()=>{window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('pageshow'));document.dispatchEvent(new Event('visibilitychange'));});
+  await expect.poll(()=>requests).toBe(2);
+  release();
+  await expect(page.locator('.weather-age')).not.toContainText('Refreshing');
+  expect(requests).toBe(2);
+});
+test('denied location falls back to campus without blocking weather',async({page})=>{
+  await page.addInitScript(()=>Object.defineProperty(navigator,'geolocation',{value:{getCurrentPosition:(_,error)=>error({code:1})}}));
+  await setup(page);
+  await page.getByRole('button',{name:'Use my location',exact:true}).click();
+  await expect(page.getByText('Precise location unavailable or outside Ithaca. Using Campus.')).toBeVisible();
+  await expect(page.getByText('Wear this',{exact:true})).toBeVisible();
+});
+test('onboarding and unavailable state pass automated accessibility checks',async({page})=>{
+  await setup(page,'fail',false);
+  const audit=async()=>{
+    const result=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa']).analyze();
+    expect(result.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>n.target)}))).toEqual([]);
+  };
+  await audit();
+  await page.getByRole('button',{name:'Four seasons'}).click();
+  await page.getByRole('button',{name:'About the same',exact:true}).click();
+  await page.getByRole('button',{name:'See my recommendation'}).click();
+  await expect(page.getByRole('heading',{name:'Weather unavailable'})).toBeVisible();
+  await audit();
+});

@@ -1,3 +1,5 @@
+> The September engineering pass is recorded in [ENGINEERING_VERIFICATION.md](ENGINEERING_VERIFICATION.md); older summaries below describe earlier milestones.
+
 # Release notes
 
 This summary describes the implementation in the current repository. The dated fix notes record earlier changes and may include wording or layouts that have since been replaced. Setup instructions live in [Backend setup](BACKEND_SETUP.md) and [Sign-in setup](ACCOUNTS_SETUP.md).
