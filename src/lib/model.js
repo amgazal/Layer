@@ -32,17 +32,27 @@ export const EMPTY_MODEL = {
 
 /** Coerce arbitrary stored/parsed data into a valid model (migration-safe). */
 export function normalizeModel(raw) {
-  if (!raw || typeof raw !== "object") return deepCopy(EMPTY_MODEL);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return deepCopy(EMPTY_MODEL);
   const next = deepCopy(EMPTY_MODEL);
-  next.seeded = Boolean(raw.seeded);
+  next.seeded = raw.seeded === true;
+  const bounded = (value, lo, hi) => Number.isFinite(Number(value)) ? clamp(Number(value), lo, hi) : 0;
   for (const k of Object.keys(next.regime)) {
-    next.regime[k].off = Number(raw.regime?.[k]?.off) || 0;
-    next.regime[k].n = Number(raw.regime?.[k]?.n) || 0;
+    next.regime[k].off = bounded(raw.regime?.[k]?.off, -CLAMP, CLAMP);
+    next.regime[k].n = bounded(raw.regime?.[k]?.n, 0, 10000);
   }
   for (const k of Object.keys(next.factors)) {
-    next.factors[k] = Number(raw.factors?.[k]) || 0;
+    next.factors[k] = bounded(raw.factors?.[k], -FACTOR_CLAMP, FACTOR_CLAMP);
   }
-  next.history = Array.isArray(raw.history) ? raw.history.slice(-80) : [];
+  next.history = Array.isArray(raw.history) ? raw.history.slice(-80).filter(h =>
+    h && typeof h === "object" && Number.isFinite(h.at) && h.at >= 0
+  ).map(h => {
+    const item = { at: h.at };
+    for (const key of ["apparent", "effective"]) if (Number.isFinite(h[key])) item[key] = clamp(h[key], -100, 160);
+    for (const [key, values] of Object.entries({ activity: ["waiting","walking","dashing"], followed: ["yes","mostly","no"], outcome: ["right","cold","warm"], blame: ["cold","wind","wet","sun"] })) {
+      if (values.includes(h[key])) item[key] = h[key];
+    }
+    return item;
+  }) : [];
   return next;
 }
 
@@ -90,20 +100,21 @@ export const confidence = (m) =>
  *  · Step size = PRIOR_N / (PRIOR_N + observations), so it shrinks with evidence.
  *  · "mostly followed" applies at 0.45 reliability.
  */
-export function updateModel(model, { apparentTemp, direction, blameKey, followed }) {
-  const next = deepCopy(model);
+export function updateModel(model, { apparentTemp, direction, blameKey, followed, weatherCorrected = false }) {
+  const next = normalizeModel(model);
+  if (weatherCorrected || !Number.isFinite(apparentTemp) || ![-1,0,1].includes(direction)) return next;
   if (direction === 0 || followed === "no") return next;
 
   const weights = kernelWeights(apparentTemp);
   const alpha = PRIOR_N / (PRIOR_N + totalObservations(model));
   const reliability = followed === "mostly" ? 0.45 : 1;
   const delta = direction * STEP_MAX * alpha * reliability;
-  const toFactor = blameKey && blameKey !== "cold" ? 0.7 : 0;
+  const toFactor = ["wind", "wet", "sun"].includes(blameKey) ? 0.7 : 0;
   const toTemp = 1 - toFactor;
 
   for (const key in weights) {
     next.regime[key].off = clamp(next.regime[key].off + delta * weights[key] * toTemp, -CLAMP, CLAMP);
-    next.regime[key].n += weights[key] * reliability;
+    next.regime[key].n = Math.min(10000, next.regime[key].n + weights[key] * reliability);
   }
 
   if (toFactor > 0) {

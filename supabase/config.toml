@@ -1,0 +1,35 @@
+# Isolated local integration project; never links to the hosted deployment.
+project_id = "layer-verification"
+[api]
+enabled = true
+port = 55421
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+[db]
+port = 55422
+shadow_port = 55420
+major_version = 17
+[db.seed]
+enabled = false
+[studio]
+enabled = false
+[inbucket]
+enabled = true
+port = 55424
+[storage]
+enabled = false
+[analytics]
+enabled = false
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:4173"
+additional_redirect_urls = ["http://127.0.0.1:4173/auth-callback.html"]
+enable_anonymous_sign_ins = true
+[auth.email]
+enable_signup = true
+double_confirm_changes = false
+enable_confirmations = false
+[auth.rate_limit]
+anonymous_users = 100
+email_sent = 100

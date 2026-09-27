@@ -74,10 +74,15 @@ export function rainSignalFromLocation(data) {
   const currentMs = typeof data.current.time === "number"
     ? data.current.time * 1000
     : new Date(data.current.time ?? Date.now()).getTime();
-  const minuteIndex = data.minutely_15?.time?.length
+  let minuteIndex = data.minutely_15?.time?.length
     ? getLatestIndexAtOrBefore(data.minutely_15.time, currentMs)
     : -1;
 
+  if (minuteIndex >= 0) {
+    const raw = data.minutely_15.time[minuteIndex];
+    const latestMs = typeof raw === 'number' ? raw * 1000 : Date.parse(raw);
+    if (currentMs - latestMs >= 15 * 60_000) minuteIndex = -1;
+  }
   const currentRate = rateFromIntervalTotal(
     liquidPrecipitationTotal(data.current),
     data.current.interval ?? 900,
@@ -143,8 +148,8 @@ export function campusRainConsensus(signals, precipitationProbability = 0) {
   if (Number(strongest.severity) >= 2 || Number(precipitationProbability) >= 35) {
     return {
       severity: 1,
-      rate: Math.max(maxRate, 0.05),
-      code: RAIN_CODES.has(Number(strongest.code)) ? strongest.code : 61,
+      rate: Math.min(2.49, Math.max(maxRate, 0.05)),
+      code: 61, // nearby evidence supports protection, not exact-point intensity
       scope: "nearby",
       support: 1,
     };

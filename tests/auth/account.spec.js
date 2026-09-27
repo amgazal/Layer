@@ -1,0 +1,33 @@
+import { test, expect } from '@playwright/test';
+import { createClient } from '@supabase/supabase-js';
+const model={v:5,seeded:true,regime:{cold:{off:-3,n:2},mild:{off:-2,n:3},warm:{off:0,n:0}},factors:{wind:0,wet:0,sun:0},history:[]};
+test('restoration failure can retry without onboarding or overwriting cloud; sign-out works',async({page})=>{
+  const client=createClient(process.env.VITE_SUPABASE_URL,process.env.VITE_SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+  const email=`browser-${crypto.randomUUID()}@example.test`,password=`Test-${crypto.randomUUID()}!`;
+  const {data,error}=await client.auth.signUp({email,password});expect(error).toBeNull();
+  const id=data.user.id;
+  expect((await client.from('model_state').insert({user_id:id,model,observations:5})).error).toBeNull();
+  await page.addInitScript(session=>localStorage.setItem('sb-127-auth-token',JSON.stringify(session)),data.session);
+  await page.route('**/api.open-meteo.com/**',r=>r.abort());
+  let fail=true;
+  await page.route('**/rest/v1/model_state*',r=>fail && r.request().method()==='GET' ? r.fulfill({status:503,json:{message:'Unavailable'}}) : r.continue());
+  await page.goto('/');
+  await expect(page.getByRole('heading',{name:'Your saved profile couldn’t load'})).toBeVisible();
+  await expect(page.getByText('Dress for how it feels to you.')).toHaveCount(0);
+  expect((await client.from('model_state').select('model').single()).data.model).toEqual(model);
+  fail=false;
+  await page.getByRole('button',{name:'Retry profile'}).click();
+  await expect(page.getByRole('heading',{name:'Weather unavailable'})).toBeVisible();
+  expect(JSON.parse(await page.evaluate(()=>localStorage.getItem('layer:model:v5'))).regime).toEqual(model.regime);
+  // Supply deterministic weather to reach account controls.
+  const now=Math.floor(Date.now()/900000)*900;
+  const hourly={time:Array.from({length:48},(_,i)=>now+i*3600),temperature_2m:Array(48).fill(60),apparent_temperature:Array(48).fill(60),weather_code:Array(48).fill(3),is_day:Array(48).fill(1),wind_speed_10m:Array(48).fill(5),precipitation:Array(48).fill(0)};
+  await page.unroute('**/api.open-meteo.com/**');
+  await page.route('**/api.open-meteo.com/**',r=>r.fulfill({json:{current:{time:now,temperature_2m:60,apparent_temperature:60,weather_code:3,is_day:1},hourly}}));
+  await page.getByRole('button',{name:'Retry',exact:true}).click();
+  await page.getByRole('button',{name:'Open profile and account'}).click();
+  await page.getByRole('button',{name:'Sign out',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Continue with email'})).toBeVisible();
+  expect(await page.evaluate(()=>localStorage.getItem('layer:cloud-pref'))).toBe('off');
+  await client.from('model_state').delete().eq('user_id',id);
+});

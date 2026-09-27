@@ -9,9 +9,10 @@ const indexHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "ut
 const authCallback = fs.readFileSync(new URL("../public/auth-callback.html", import.meta.url), "utf8");
 const manifest = JSON.parse(fs.readFileSync(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
 
+const client = fs.readFileSync(new URL("../src/lib/weather-client.js", import.meta.url), "utf8");
 const checks = [
-  ["weather API requests current is_day", /current=[^`\n]*is_day/.test(source)],
-  ["weather API requests hourly is_day", /hourly=[^`\n]*is_day/.test(source)],
+  ["weather API requests current is_day", /current:[^\n]*is_day/.test(client)],
+  ["weather API requests hourly is_day", /hourly[^\n]*is_day/.test(client)],
   ["night-mode class is driven by daylight", /night-mode/.test(source) && /liveIsDay/.test(source)],
   ["sun threat is conditional on isDay", /if \(isDay\)[\s\S]*threats\.push\(\{ key: "sun"/.test(source)],
   ["sun factor applies only in daylight", /if \(isDay && cond\.clear/.test(source)],
@@ -21,8 +22,8 @@ const checks = [
   ["cloud requires explicit opt-in", /return cloudPreference\(\) === "on"/.test(sync)],
   ["outbox removes only uploaded IDs", /uploadedIds[\s\S]*latest\.filter/.test(sync)],
   ["rain intensity reconciles WMO code with a measured rate", /rainIntensityFromRate/.test(weather) && /measured > 0 \|\| codedRain/.test(weather)],
-  ["weather request includes current and 15-minute precipitation", /current=[^`\n]*,precipitation,/.test(source) && /minutely_15=[^`\n]*precipitation/.test(source)],
-  ["weather refreshes automatically", /ACTIVE_RAIN_REFRESH_MS/.test(source) && /setInterval\(\(\) => loadWeather\(true\)/.test(source)],
+  ["weather request includes current and 15-minute precipitation", /current:[^\n]*,precipitation,/.test(client) && /minutely_15:[^\n]*precipitation/.test(client)],
+  ["weather refreshes automatically", /ACTIVE_RAIN_REFRESH_MS/.test(source) && /setInterval[\s\S]*loadWeather\(true\)/.test(source)],
   ["rain video follows live conditions", /liveCond\.category === "rain"/.test(source) && /rain-loop\.mp4/.test(source) && /<video/.test(source)],
   ["rain video resumes after app backgrounding", /visibilitychange/.test(source) && /pageshow/.test(source) && /resumeRainVideo/.test(source)],
   ["manual refresh restarts rain footage", /handleManualRefresh/.test(source) && /restart: true, reload: true/.test(source)],
@@ -39,7 +40,7 @@ const checks = [
   ["balanced outing durations are offered", /"20 min"/.test(source) && /"1 hr"/.test(source) && /"2 hrs"/.test(source) && /"4\+ hrs"/.test(source)],
   ["live rain uses the latest completed interval", /getLatestIndexAtOrBefore/.test(weather) && /rainSignalFromLocation/.test(weather)],
   ["overcast cannot mask measured rain", /Pure condition classifier/.test(weather) && weather.indexOf("if (measured > 0 || codedRain)") < weather.indexOf("if (value === 3)")],
-  ["localised campus showers use a conservative multi-point fallback", /CAMPUS_RAIN_POINTS/.test(source) && /campusRainConsensus/.test(source) && /rainProbeUrl/.test(source)],
+  ["localised campus showers use a conservative multi-point fallback", /CAMPUS_POINTS/.test(client) && /campusRainConsensus/.test(client) && /forecastUrl\(points, true\)/.test(client)],
   ["rain condition controls the scene", /key: liveCond\.category/.test(source)],
   ["active rain adds waterproof clothing", /Waterproof rain jacket with hood/.test(source) && /Packable rain shell/.test(source)],
   ["current rain wording does not use the outing peak", /function extrasFor\(threats, cond\)/.test(source) && !/function extrasFor\(threats, cond, peakRainRate/.test(source)],
@@ -62,7 +63,7 @@ const checks = [
   ["event rows can be deleted by their owner", /create policy "own events delete"/.test(schema)],
   ["queued feedback retries automatically with backoff", /scheduleRetry/.test(sync) && /RETRY_MAX_MS/.test(sync) && /addEventListener\("online"/.test(sync)],
   ["pending calibration is flushed when the page hides", /flushPendingModel/.test(sync) && /pagehide/.test(sync)],
-  ["failed model push keeps the snapshot for retry", /if \(!pendingModel\) pendingModel = snapshot/.test(sync)],
+  ["failed model push keeps the snapshot for retry", /!pendingModel && generation === syncGeneration/.test(sync)],
   ["mobile layout blocks horizontal drift", /overflow-x: hidden/.test(source) && /touch-action: pan-y/.test(source) && /clampHorizontalScroll/.test(source) && /\.lyr\.ob-wrap[\s\S]*width:auto/.test(source) && !/100vw - 18px/.test(source)],
   ["email auth uses a real static callback page", /auth-callback\.html/.test(supa) && /base: "\.\/"/.test(fs.readFileSync(new URL("../vite.config.js", import.meta.url), "utf8"))],
   ["oauth redirects are consumed by the client", /detectSessionInUrl: true/.test(supa) && /authRedirectUrl/.test(supa)],

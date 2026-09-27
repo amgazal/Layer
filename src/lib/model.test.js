@@ -254,3 +254,18 @@ describe("updateModel — the learning step", () => {
     }
   });
 });
+
+describe('untrusted stored personalization', () => {
+  it('bounds offsets, factors, counts and strips unknown history fields', () => {
+    const m = normalizeModel({seeded:'yes',v:999,regime:{cold:{off:999,n:-10},mild:{off:Infinity,n:Infinity},warm:{off:-999,n:1e10}},factors:{wind:999,wet:-999,sun:NaN},history:[null,{at:1,latitude:42,garbage:'x',apparent:900,followed:'invalid'}]});
+    expect(m.seeded).toBe(false); expect(m.v).toBe(5);
+    expect(m.regime.cold).toEqual({off:15,n:0}); expect(m.regime.mild).toEqual({off:0,n:0});
+    expect(m.regime.warm).toEqual({off:-15,n:10000});
+    expect(m.factors).toEqual({wind:7,wet:-7,sun:0});
+    expect(m.history).toEqual([{at:1,apparent:160}]);
+  });
+  it('never trains temperature or factors from a weather correction', () => {
+    const m=fresh();
+    expect(updateModel(m,{apparentTemp:50,direction:-1,followed:'yes',blameKey:'wet',weatherCorrected:true})).toEqual(m);
+  });
+});

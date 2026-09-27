@@ -89,3 +89,24 @@ describe("campus rain detection", () => {
     expect(consensus.severity).toBe(1);
   });
 });
+
+describe('current condition matrix and interval boundaries',()=>{
+  it.each([[0,0,'Clear'],[3,0,'Overcast'],[0,.2,'Light rain'],[3,.2,'Light rain'],[51,0,'Drizzle'],[61,0,'Light rain'],[65,0,'Heavy rain'],[71,0,'Light snow'],[66,0,'Freezing rain'],[95,0,'Thunderstorm']])('code %i rate %f → %s',(code,rate,label)=>{
+    expect(classifyWeather(code,1,rate).label).toBe(label);
+  });
+  it.each([0,1,899])('ignores future rain at boundary +%i seconds',offset=>{
+    const t=1800000000;
+    const signal=rainSignalFromLocation({current:{time:t+offset,weather_code:0,precipitation:0},minutely_15:{time:[t,t+900],precipitation:[0,.5],weather_code:[0,61]}});
+    expect(signal.severity).toBe(0);
+  });
+  it('aligns absolute timestamps across the fall DST repeated hour',()=>{
+    const t=Date.parse('2026-11-01T01:15:00-05:00')/1000;
+    expect(rainSignalFromLocation({current:{time:t,weather_code:0},minutely_15:{time:[t-3600,t,t+900],precipitation:[0,.2,1]}}).rate).toBe(.8);
+  });
+});
+it('ignores an old completed interval and caps single nearby intensity',()=>{
+  const t=1800000000;
+  expect(rainSignalFromLocation({current:{time:t,weather_code:0},minutely_15:{time:[t-1800],precipitation:[2]}}).severity).toBe(0);
+  const nearby=campusRainConsensus([{severity:0,rate:0,code:0},{severity:3,rate:20,code:65}],10);
+  expect(nearby.rate).toBeLessThan(2.5);
+});

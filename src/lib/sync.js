@@ -76,6 +76,9 @@ function markNet(state) {
 let pushTimer = null;
 let pendingModel = null;
 let authPromise = null;
+let syncGeneration = 0;
+let modelWrite = Promise.resolve();
+let eventWrite = Promise.resolve();
 
 export function setCloudPref(allow) {
   lsSet(PREF_KEY, allow ? "on" : "off");
@@ -84,6 +87,8 @@ export function setCloudPref(allow) {
     clearTimeout(pushTimer);
     pushTimer = null;
     pendingModel = null;
+    syncGeneration += 1;
+    cancelRetry();
     markNet("device-only");
   } else {
     markNet("connecting");
@@ -121,7 +126,7 @@ export async function ensureAuth() {
   const user = await authPromise;
   // Do not cache a failed promise forever. A temporary outage or a dashboard
   // setting change can now be retried in the same tab.
-  if (!user) authPromise = null;
+  authPromise = null;
   return user;
 }
 
@@ -140,7 +145,8 @@ export async function pullModel() {
   if (!cloudEnabled || !cloudAllowed()) return null;
   try {
     const user = await ensureAuth();
-    if (!user) return null;
+    if (!user) throw new Error("Account session unavailable");
+    if (hasPendingReset()) throw new Error("Personalization reset is pending");
     const { data, error } = await supabase
       .from("model_state")
       .select("model, observations, updated_at")
@@ -152,7 +158,7 @@ export async function pullModel() {
   } catch (error) {
     console.warn("[sync] model pull failed:", error?.message || error);
     markNet("unavailable");
-    return null;
+    throw error;
   }
 }
 
@@ -165,7 +171,8 @@ export async function pullProfile() {
   if (!cloudEnabled || !cloudAllowed()) return null;
   try {
     const user = await ensureAuth();
-    if (!user) return null;
+    if (!user) throw new Error("Account session unavailable");
+    if (hasPendingReset()) throw new Error("Personalization reset is pending");
     const { data, error } = await supabase
       .from("profiles")
       .select("climate, tolerance, is_anonymous, updated_at")
@@ -177,11 +184,16 @@ export async function pullProfile() {
   } catch (error) {
     console.warn("[sync] profile pull failed:", error?.message || error);
     markNet("unavailable");
-    return null;
+    throw error;
   }
 }
 
-async function uploadPendingModel() {
+function uploadPendingModel() {
+  const generation = syncGeneration;
+  modelWrite = modelWrite.catch(() => {}).then(() => generation === syncGeneration ? performModelUpload(generation) : undefined);
+  return modelWrite;
+}
+async function performModelUpload(generation) {
   pushTimer = null;
   if (!cloudAllowed()) { pendingModel = null; return; }
 
@@ -191,7 +203,7 @@ async function uploadPendingModel() {
 
   try {
     const user = await ensureAuth();
-    if (!user || !cloudAllowed()) return;
+    if (!user || !cloudAllowed() || generation !== syncGeneration || hasPendingReset()) return;
     const { error } = await supabase.from("model_state").upsert(
       {
         user_id: user.id,
@@ -207,7 +219,7 @@ async function uploadPendingModel() {
     console.warn("[sync] model push failed:", error?.message || error);
     markNet("unavailable");
     // Keep the snapshot so the next push or page-hide flush can retry it.
-    if (!pendingModel) pendingModel = snapshot;
+    if (!pendingModel && generation === syncGeneration && !hasPendingReset()) pendingModel = snapshot;
   }
 }
 
@@ -226,7 +238,7 @@ export function pushModel(model, observations) {
 export function flushPendingModel() {
   if (!cloudEnabled || !cloudAllowed() || !pendingModel) return;
   clearTimeout(pushTimer);
-  uploadPendingModel();
+  return uploadPendingModel();
 }
 
 if (typeof document !== "undefined") {
@@ -280,7 +292,7 @@ function writeOutbox(events) {
 export function logEvent(event) {
   if (!cloudEnabled || !cloudAllowed()) return;
   const queued = readOutbox();
-  queued.push({ client_event_id: uuid(), ...event });
+  queued.push({ client_event_id: uuid(), ...event, owner: authInfo.userId });
   writeOutbox(queued);
   flushOutbox();
 }
@@ -321,6 +333,7 @@ function attachDeliveryTriggers() {
   if (typeof window === "undefined") return;
   const attempt = () => {
     if (!cloudEnabled || !cloudAllowed()) return;
+    flushPendingModel();
     if (readOutbox().length === 0) return;
     cancelRetry();          // a live signal beats waiting out the backoff
     flushOutbox();
@@ -334,8 +347,15 @@ function attachDeliveryTriggers() {
 }
 attachDeliveryTriggers();
 
-export async function flushOutbox() {
+export function flushOutbox() {
+  const run = () => performOutboxFlush();
+  eventWrite = typeof navigator !== 'undefined' && navigator.locks
+    ? navigator.locks.request('layer-feedback-outbox', run) : run();
+  return eventWrite;
+}
+async function performOutboxFlush() {
   if (!cloudEnabled || !cloudAllowed() || flushing) return;
+  const generation = syncGeneration;
   const batch = readOutbox();
   if (batch.length === 0) return;
 
@@ -345,7 +365,11 @@ export async function flushOutbox() {
     const user = await ensureAuth();
     if (!user || !cloudAllowed()) { if (user === null) scheduleRetry(); return; }
 
-    const rows = batch.map((event) => ({ user_id: user.id, ...event }));
+    if (generation !== syncGeneration || hasPendingReset()) return;
+    // Never transfer queued feedback to a different signed-in identity.
+    const owned = batch.filter(event => event.owner === user.id);
+    if (!owned.length) return;
+    const rows = owned.map(({ owner, ...event }) => ({ ...event, user_id: user.id }));
     const { error } = await supabase
       .from("events")
       .upsert(rows, { onConflict: "client_event_id", ignoreDuplicates: true });
@@ -353,7 +377,7 @@ export async function flushOutbox() {
 
     // Remove only the events that belonged to this upload batch. If a new
     // feedback event was added while the request was in flight, it remains.
-    const uploadedIds = new Set(batch.map((event) => event.client_event_id));
+    const uploadedIds = new Set(owned.map((event) => event.client_event_id));
     const latest = readOutbox();
     writeOutbox(latest.filter((event) => !uploadedIds.has(event.client_event_id)));
     uploaded = true;
@@ -383,11 +407,14 @@ export function hasPendingReset() {
  * sync is enabled if the network is unavailable.
  */
 export async function resetPersonalizationCloud(emptyModel) {
+  syncGeneration += 1;
   clearTimeout(pushTimer);
   pushTimer = null;
   pendingModel = null;
+  cancelRetry();
   writeOutbox([]);
   lsSet(RESET_PENDING_KEY, "1");
+  await Promise.allSettled([modelWrite, eventWrite]);
 
   if (!cloudEnabled) {
     lsRemove(RESET_PENDING_KEY);
@@ -474,8 +501,12 @@ if (cloudEnabled) {
     }
 
     const accountChanged = permanent && user.id !== authInfo.userId;
+    if (authInfo.userId && user.id !== authInfo.userId) {
+      syncGeneration += 1; pendingModel = null; clearTimeout(pushTimer);
+    }
+    authPromise = null;
     const shouldRestore = permanent && (
-      event === "SIGNED_IN" || event === "INITIAL_SESSION" || accountChanged
+      event === "INITIAL_SESSION" || accountChanged || authInfo.status !== "permanent"
     );
 
     setAuth({
@@ -652,10 +683,11 @@ export async function sendEmailLink(email, { mode = "link" } = {}) {
 export async function signOutCloud() {
   if (!cloudEnabled) return { ok: true };
   try {
-    flushPendingModel();
-    await supabase.auth.signOut();
+    await flushPendingModel();
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+    setCloudPref(false);
     authPromise = null;
-    if (cloudAllowed()) await ensureAuth(); // fresh anonymous identity
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error?.message || "Could not sign out." };

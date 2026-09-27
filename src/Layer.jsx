@@ -1,3 +1,5 @@
+import { buildOuting, outingTemperature } from "./lib/outing";
+import { CACHE_KEY, CAMPUS_POINTS, fetchWeather, readWeatherCache, weatherTrust, locateOnce, activeCorrection, correctCurrent, timeMs } from "./lib/weather-client";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -9,12 +11,12 @@ import {
 } from "lucide-react";
 import {
   CLAMP, clamp, deepCopy, EMPTY_MODEL, normalizeModel,
-  pooledOffset, totalObservations, updateModel,
+  totalObservations, updateModel,
 } from "./lib/model";
 import {
-  campusRainConsensus, classifyWeather, getLatestIndexAtOrBefore,
+  classifyWeather,
   rainIntensityFromRate, rainSignalFromLocation,
-  rateFrom15MinuteTotal, wmoRainSeverity,
+
 } from "./lib/weather";
 import { visibleTemperatureShift, temperatureShiftLabel } from "./lib/presentation";
 import {
@@ -37,17 +39,7 @@ const CAMPUS = {
 // that can fall between forecast grid cells. The central point still controls
 // temperature and wind; nearby points are used only as a conservative rain
 // fallback.
-const CAMPUS_RAIN_POINTS = [
-  [42.4534, -76.4735], // central campus
-  [42.4603, -76.4780], // north campus
-  [42.4480, -76.4630], // east campus
-  [42.4460, -76.4820], // south-west campus
-  [42.4610, -76.4650], // north-east campus
-];
-
 const MODEL_KEY = "layer:model:v5";
-const CACHE_KEY = "layer:wx-cache:v7";
-const CACHE_TTL = 5 * 60 * 1000;
 const WEATHER_REFRESH_MS = 5 * 60 * 1000;
 const ACTIVE_RAIN_REFRESH_MS = 2 * 60 * 1000;
 // Open-Meteo is_day drives both automatic night dimming and sun-threat accuracy.
@@ -134,8 +126,8 @@ function seededModelFromSetup(climateKey, toleranceKey) {
 
 const ACTIVITIES = {
   waiting: { label: "Standing", Icon: Timer, adj: -5, hint: "Stop, platform, queue" },
-  walking: { label: "Walking", Icon: Footprints, adj: 2, hint: "10+ min on foot" },
-  dashing: { label: "Quick trip", Icon: Car, adj: 6, hint: "Door to car to door" },
+  walking: { label: "Walking", Icon: Footprints, adj: 2, hint: "Moving on foot" },
+  dashing: { label: "Mostly sheltered", Icon: Car, adj: 6, hint: "Door to car to door" },
 };
 
 
@@ -265,126 +257,6 @@ function extrasFor(threats, cond) {
 
 function asDate(value) {
   return typeof value === "number" ? new Date(value * 1000) : new Date(value);
-}
-
-function getClosestIndex(times, targetMs) {
-  if (!times?.length) return 0;
-  let best = 0;
-  let minDiff = Infinity;
-  for (let i = 0; i < times.length; i++) {
-    const diff = Math.abs(asDate(times[i]).getTime() - targetMs);
-    if (diff < minDiff) {
-      minDiff = diff;
-      best = i;
-    }
-  }
-  return best;
-}
-
-function probabilityAt(hourly, targetMs) {
-  if (!hourly?.time?.length || !Array.isArray(hourly.precipitation_probability)) return 0;
-  return Number(hourly.precipitation_probability[getClosestIndex(hourly.time, targetMs)] ?? 0);
-}
-
-function conditionWindow(hourly, startIndex, durationMinutes) {
-  const hours = Math.max(1, Math.ceil(durationMinutes / 60));
-  const end = Math.min(hourly.time.length - 1, startIndex + hours);
-  const slice = (key, fallback = []) => Array.isArray(hourly[key]) ? hourly[key].slice(startIndex, end + 1) : fallback;
-  const apparent = slice("apparent_temperature");
-  const actual = slice("temperature_2m");
-  const wind = slice("wind_speed_10m", actual.map(() => 0));
-  const gust = slice("wind_gusts_10m", wind);
-  const precip = slice("precipitation_probability", actual.map(() => 0));
-  const precipRates = slice("precipitation", actual.map(() => 0)).map((value) => Math.max(0, Number(value) || 0));
-  const codes = slice("weather_code", actual.map(() => 3));
-  const daylight = slice("is_day", hourly.time.slice(startIndex, end + 1).map((value) => {
-    const hour = asDate(value).getHours();
-    return hour >= 7 && hour < 20 ? 1 : 0;
-  }));
-  return {
-    startIndex,
-    endIndex: end,
-    apparent,
-    actual,
-    wind,
-    gust,
-    precip,
-    precipRates,
-    codes,
-    daylight,
-    depart: {
-      actual: Math.round(actual[0]),
-      apparent: Math.round(apparent[0]),
-      wind: Math.round(wind[0] ?? 0),
-      gust: Math.round(gust[0] ?? wind[0] ?? 0),
-      precip: Math.round(precip[0] ?? 0),
-      precipRate: Number(precipRates[0] ?? 0),
-      code: codes[0],
-      time: hourly.time[startIndex],
-      isDay: Number(daylight[0] ?? 1),
-    },
-    minApparent: Math.round(Math.min(...apparent)),
-    maxApparent: Math.round(Math.max(...apparent)),
-    endApparent: Math.round(apparent[apparent.length - 1]),
-    maxPrecip: Math.round(Math.max(...precip)),
-    endPrecip: Math.round(precip[precip.length - 1] ?? 0),
-    peakRainRate: Math.max(0, ...precipRates),
-  };
-}
-
-function conditionWindow15(minutely, hourly, startMs, durationMinutes) {
-  if (!minutely?.time?.length) return null;
-  const startIndex = getClosestIndex(minutely.time, startMs);
-  const endMs = startMs + durationMinutes * 60 * 1000;
-  let endIndex = startIndex;
-  while (endIndex + 1 < minutely.time.length && asDate(minutely.time[endIndex + 1]).getTime() <= endMs + 7.5 * 60 * 1000) {
-    endIndex += 1;
-  }
-  if (endIndex === startIndex && endIndex + 1 < minutely.time.length) endIndex += 1;
-
-  const slice = (key, fallback = []) => Array.isArray(minutely[key]) ? minutely[key].slice(startIndex, endIndex + 1) : fallback;
-  const actual = slice("temperature_2m");
-  const apparent = slice("apparent_temperature", actual);
-  const wind = slice("wind_speed_10m", actual.map(() => 0));
-  const gust = slice("wind_gusts_10m", wind);
-  const precipitation15 = slice("precipitation", actual.map(() => 0));
-  const precipRates = precipitation15.map(rateFrom15MinuteTotal);
-  const codes = slice("weather_code", actual.map(() => 3));
-  const daylight = slice("is_day", actual.map((_, index) => {
-    const hour = asDate(minutely.time[startIndex + index]).getHours();
-    return hour >= 7 && hour < 20 ? 1 : 0;
-  }));
-  const precip = minutely.time.slice(startIndex, endIndex + 1).map((time) => probabilityAt(hourly, asDate(time).getTime()));
-
-  return {
-    startIndex,
-    endIndex,
-    apparent,
-    actual,
-    wind,
-    gust,
-    precip,
-    precipRates,
-    codes,
-    daylight,
-    depart: {
-      actual: Math.round(actual[0]),
-      apparent: Math.round(apparent[0]),
-      wind: Math.round(wind[0] ?? 0),
-      gust: Math.round(gust[0] ?? wind[0] ?? 0),
-      precip: Math.round(precip[0] ?? 0),
-      precipRate: Number(precipRates[0] ?? 0),
-      code: codes[0],
-      time: minutely.time[startIndex],
-      isDay: Number(daylight[0] ?? 1),
-    },
-    minApparent: Math.round(Math.min(...apparent)),
-    maxApparent: Math.round(Math.max(...apparent)),
-    endApparent: Math.round(apparent[apparent.length - 1]),
-    maxPrecip: Math.round(Math.max(...precip)),
-    endPrecip: Math.round(precip[precip.length - 1] ?? 0),
-    peakRainRate: Math.max(0, ...precipRates),
-  };
 }
 
 function formatTime(dateLike) {
@@ -627,9 +499,9 @@ function AccountSection({ auth, cloudState, ratingCount, onEnableCloud, intent =
 
   const doSignOut = async () => {
     setBusy("out");
-    await signOutCloud();
+    const result = await signOutCloud();
     setBusy(null);
-    setStatus({ kind: "ok", text: "Signed out. This device will keep working with a separate local profile." });
+    setStatus(result.ok ? { kind: "ok", text: "Signed out. Your calibration stays on this device; cloud sync is off." } : { kind: "error", text: result.error });
   };
 
   if (!cloudConfigured) {
@@ -881,7 +753,7 @@ function Onboarding({
             )}
 
             <div className="ob-privacy">
-              No account is required. Layer uses Cornell’s fixed campus location—not your phone’s GPS.
+              No account is required. Layer uses a fixed campus location unless you choose Use my location.
             </div>
 
             <button
@@ -907,10 +779,25 @@ function Onboarding({
 
 export default function Layer() {
   const mounted = useRef(true);
+  const modelRevision = useRef(0);
   const rainVideoRef = useRef(null);
   const [model, setModel] = useState(deepCopy(EMPTY_MODEL));
   const [ready, setReady] = useState(false);
   const [wx, setWx] = useState(null);
+  const weatherRequest = useRef(null);
+  const weatherSnapshot = useRef(null);
+  const [preciseMode, setPreciseMode] = useState(false);
+  const [locationNotice, setLocationNotice] = useState(null);
+  const [correction, setCorrection] = useState(null);
+  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const change = () => setReducedMotion(query.matches);
+    query.addEventListener('change', change);
+    return () => query.removeEventListener('change', change);
+  }, []);
+
   const [wxState, setWxState] = useState("loading");
   const [weatherUpdatedAt, setWeatherUpdatedAt] = useState(null);
   const [activity, setActivity] = useState("walking");
@@ -922,6 +809,8 @@ export default function Layer() {
   const [toast, setToast] = useState(null);
   const [accountNotice, setAccountNotice] = useState(null);
   const [accountRestoreBusy, setAccountRestoreBusy] = useState(false);
+  const [accountRestoreError, setAccountRestoreError] = useState(false);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
   // A brand-new tester has not been outside yet, so the rating controls stay
   // behind one deliberate tap. This prevents accidental day-one feedback from
   // training the model before the user has actually tried a recommendation.
@@ -940,7 +829,7 @@ export default function Layer() {
   const [resetBusy, setResetBusy] = useState(false);
   const profilePanelRef = useRef(null);
 
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; weatherRequest.current?.abort(); }; }, []);
 
   // Mobile Safari can preserve a tiny horizontal scroll offset after an auth
   // handoff or browser-tab transition. Layer has no horizontal navigation, so
@@ -1073,7 +962,15 @@ export default function Layer() {
     if (!profileOpen) return undefined;
     const previousBodyOverflow = document.body.style.overflow;
     const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousFocus = document.activeElement;
     const closeOnEscape = (event) => {
+      if (document.querySelector(".email-sent-overlay")) return;
+      if (event.key === "Tab") {
+        const elements = [...(profilePanelRef.current?.querySelectorAll("button:not(:disabled), input, a[href], [tabindex=\"0\"]") ?? [])];
+        const first = elements[0], last = elements.at(-1);
+        if (event.shiftKey && (document.activeElement === first || !profilePanelRef.current?.contains(document.activeElement) || document.activeElement === profilePanelRef.current)) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
       if (event.key === "Escape") {
         setResetConfirmOpen(false);
         setProfileOpen(false);
@@ -1086,15 +983,13 @@ export default function Layer() {
     document.documentElement.style.overflow = "hidden";
     window.addEventListener("keydown", closeOnEscape);
 
-    const focusId = window.requestAnimationFrame(() => {
-      profilePanelRef.current?.focus({ preventScroll: true });
-    });
+    profilePanelRef.current?.focus({ preventScroll: true });
 
     return () => {
-      window.cancelAnimationFrame(focusId);
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousHtmlOverflow;
       window.removeEventListener("keydown", closeOnEscape);
+      previousFocus?.focus?.({ preventScroll: true });
     };
   }, [profileOpen]);
 
@@ -1103,6 +998,7 @@ export default function Layer() {
   }, []);
 
   const commit = useCallback((next) => {
+    modelRevision.current += 1;
     setModel(next);
     persist(next);                              // local-first: write immediately
     pushModel(next, totalObservations(next));   // background cloud mirror (no-op if disabled)
@@ -1130,8 +1026,9 @@ export default function Layer() {
       ensureAuth();
       flushOutbox();  // resend any feedback events queued while offline last time
       try {
+        const revision = modelRevision.current;
         const cloud = await pullModel();
-        if (!mounted.current) return;
+        if (!mounted.current || modelRevision.current !== revision || hasPendingReset() || currentAuth().status === "permanent") return;
         if (cloud?.model) {
           const cloudModel = normalizeModel(cloud.model);
           const localObs = localModel ? totalObservations(localModel) : -1;
@@ -1152,12 +1049,6 @@ export default function Layer() {
     })();
   }, []);
 
-  useEffect(() => {
-    Object.values(BACKGROUNDS).forEach((src) => {
-      const image = new Image();
-      image.src = src;
-    });
-  }, []);
 
   /**
    * After an explicit sign-in the user is saying "put my profile on this
@@ -1171,10 +1062,15 @@ export default function Layer() {
     if (!auth.signedInAt || auth.signedInAt === adoptedSignIn.current) return;
     adoptedSignIn.current = auth.signedInAt;
     const hadLocalProfile = Boolean(model.seeded);
+    setAccountRestoreError(false);
     let cancelled = false;
     setAccountRestoreBusy(true);
     (async () => {
       try {
+        if (hasPendingReset()) {
+          await resetPersonalizationCloud(deepCopy(EMPTY_MODEL));
+          if (hasPendingReset()) throw new Error("Reset pending");
+        }
         const cloud = await pullModel();
         if (cancelled || !mounted.current) return;
         if (cloud?.model) {
@@ -1219,18 +1115,18 @@ export default function Layer() {
         }
       } catch {
         if (!cancelled && mounted.current) {
-          setAccountNotice("You're signed in, but your saved profile couldn't load yet. Check your connection and try again.");
+          setAccountRestoreError(true);
         }
       } finally {
         if (!cancelled && mounted.current) setAccountRestoreBusy(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; adoptedSignIn.current = 0; };
     // model.seeded is captured intentionally at the moment this sign-in starts;
     // including it as a dependency would cancel the restore as soon as the
     // cloud model is applied.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth.signedInAt]);
+  }, [auth.signedInAt, restoreAttempt]);
 
   const seed = useCallback((climateKey, tolKey, allowCloud = false) => {
     // Record the consent choice BEFORE any model change triggers a sync.
@@ -1275,6 +1171,9 @@ export default function Layer() {
       }
       flushOutbox();
       return true;
+    } catch {
+      setAccountNotice("Your saved profile could not load. Please retry sync.");
+      return false;
     } finally {
       setCloudActionBusy(false);
     }
@@ -1330,145 +1229,43 @@ export default function Layer() {
   }, []);
 
   const loadWeather = useCallback(async (force = false) => {
-    let cached = null;
-    if (!force) {
-      const stored = await storageGet(CACHE_KEY);
-      if (stored?.value) {
-        try {
-          const parsed = JSON.parse(stored.value);
-          if (Date.now() - parsed.at < CACHE_TTL) {
-            cached = parsed;
-            if (mounted.current) {
-              setWx(parsed.data);
-              setWeatherUpdatedAt(parsed.at);
-              setWxState("cached");
-            }
-          }
-        } catch {}
-      }
-    }
-
-    if (!cached && mounted.current) setWxState("loading");
-
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${CAMPUS.lat}&longitude=${CAMPUS.lon}` +
-      `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,rain,showers,precipitation_probability,is_day` +
-      `&minutely_15=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,rain,showers,is_day` +
-      `&hourly=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,precipitation,precipitation_probability,is_day` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=America%2FNew_York&timeformat=unixtime&past_minutely_15=2&forecast_minutely_15=96&forecast_days=2`;
-
-    const probeLatitudes = CAMPUS_RAIN_POINTS.map(([lat]) => lat).join(",");
-    const probeLongitudes = CAMPUS_RAIN_POINTS.map(([, lon]) => lon).join(",");
-    const rainProbeUrl = `https://api.open-meteo.com/v1/forecast?latitude=${probeLatitudes}&longitude=${probeLongitudes}` +
-      `&current=weather_code,precipitation,rain,showers` +
-      `&minutely_15=weather_code,precipitation,rain,showers` +
-      `&timezone=America%2FNew_York&timeformat=unixtime&past_minutely_15=2&forecast_minutely_15=2`;
-
+    // Single flight includes JSON decoding; focus/pageshow/manual calls coalesce.
+    if (weatherRequest.current) return;
+    const ctrl = new AbortController();
+    weatherRequest.current = ctrl;
+    setWeatherRefreshing(true);
+    let timer;
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 10000);
-      const [mainResult, probeResult] = await Promise.allSettled([
-        fetch(url, { signal: ctrl.signal }),
-        fetch(rainProbeUrl, { signal: ctrl.signal }),
-      ]);
-      clearTimeout(timer);
-
-      if (mainResult.status !== "fulfilled" || !mainResult.value.ok) {
-        const status = mainResult.status === "fulfilled" ? mainResult.value.status : "network";
-        throw new Error(`weather request failed (${status})`);
-      }
-      const data = await mainResult.value.json();
-
-      const currentMs = typeof data.current?.time === "number" ? data.current.time * 1000 : Date.now();
-      // 15-minute precipitation values describe the interval that just ended.
-      // Never let a future interval erase rain that is already falling.
-      const minuteIndex = data.minutely_15?.time?.length
-        ? getLatestIndexAtOrBefore(data.minutely_15.time, currentMs)
-        : -1;
-
-      const primaryRainSignal = rainSignalFromLocation(data);
-      const currentProbability = Math.round(probabilityAt(data.hourly, currentMs));
-      let campusRainSignal = { ...primaryRainSignal, scope: primaryRainSignal.severity > 0 ? "primary" : "none", support: primaryRainSignal.severity > 0 ? 1 : 0 };
-
-      // A single forecast grid point can miss a narrow shower across Cornell's
-      // spread-out campus. A lightweight multi-point request is used only to
-      // strengthen the rain signal; it never changes temperature or wind.
-      if (probeResult.status === "fulfilled" && probeResult.value.ok) {
-        try {
-          const probeJson = await probeResult.value.json();
-          const locations = Array.isArray(probeJson) ? probeJson : [probeJson];
-          const signals = locations.map(rainSignalFromLocation);
-          if (signals.length) signals[0] = primaryRainSignal;
-          campusRainSignal = campusRainConsensus(signals, currentProbability);
-        } catch (probeError) {
-          console.warn("[weather] campus rain probe unavailable:", probeError?.message || probeError);
+      if (!weatherSnapshot.current) {
+        const stored = await storageGet(CACHE_KEY);
+        const cached = readWeatherCache(stored?.value);
+        if (cached && !preciseMode && mounted.current) {
+          weatherSnapshot.current = cached;
+          setWx(cached.data); setWeatherUpdatedAt(cached.at); setWxState('cached');
         }
       }
-
-      const rainRate = Math.max(primaryRainSignal.rate, campusRainSignal.rate);
-      const rawCurrentCode = Number(data.current?.weather_code ?? 3);
-      const recentCode = minuteIndex >= 0 ? Number(data.minutely_15.weather_code?.[minuteIndex] ?? rawCurrentCode) : rawCurrentCode;
-      const strongestCode = wmoRainSeverity(recentCode) > wmoRainSeverity(rawCurrentCode) ? recentCode : rawCurrentCode;
-      const currentCode = campusRainSignal.severity > wmoRainSeverity(strongestCode)
-        ? Number(campusRainSignal.code ?? strongestCode)
-        : strongestCode;
-      const currentIsDay = Number(data.current?.is_day ?? (minuteIndex >= 0 ? data.minutely_15.is_day?.[minuteIndex] : 1) ?? 1);
-      const currentWind = Number(data.current?.wind_speed_10m ?? (minuteIndex >= 0 ? data.minutely_15.wind_speed_10m?.[minuteIndex] : 0) ?? 0);
-      const currentGust = Number(data.current?.wind_gusts_10m ?? (minuteIndex >= 0 ? data.minutely_15.wind_gusts_10m?.[minuteIndex] : currentWind) ?? currentWind);
-
-      const payload = {
-        current: {
-          actual: Math.round(data.current.temperature_2m),
-          apparent: Math.round(data.current.apparent_temperature),
-          code: currentCode,
-          wind: Math.round(currentWind),
-          gust: Math.round(currentGust),
-          precip: currentProbability,
-          precipRate: rainRate,
-          rainScope: campusRainSignal.scope,
-          rainSupport: campusRainSignal.support,
-          time: data.current.time,
-          isDay: currentIsDay,
-        },
-        minutely: data.minutely_15 ?? null,
-        hourly: data.hourly,
-      };
-      const fetchedAt = Date.now();
-      if (!mounted.current) return;
-      setWx(payload);
-      setWeatherUpdatedAt(fetchedAt);
-      setWxState("live");
-      await storageSet(CACHE_KEY, JSON.stringify({ at: fetchedAt, data: payload }));
-    } catch (error) {
-      if (!mounted.current) return;
-      if (cached) {
-        setWxState("cached");
-        return;
-      }
-
-      const fallbackNow = new Date();
-      const hourlyTimes = Array.from({ length: 12 }, (_, i) => new Date(fallbackNow.getTime() + i * 60 * 60 * 1000).toISOString());
-      setWx({
-        current: { actual: 71, apparent: 72, code: 2, wind: 9, gust: 12, precip: 10, precipRate: 0, time: fallbackNow.toISOString(), isDay: fallbackNow.getHours() >= 7 && fallbackNow.getHours() < 20 ? 1 : 0 },
-        minutely: null,
-        hourly: {
-          time: hourlyTimes,
-          temperature_2m: [71, 72, 73, 74, 75, 74, 73, 72, 70, 68, 67, 66],
-          apparent_temperature: [72, 73, 74, 75, 76, 75, 74, 73, 71, 69, 68, 67],
-          wind_speed_10m: [9, 10, 11, 10, 9, 8, 8, 8, 9, 10, 9, 8],
-          wind_gusts_10m: [12, 14, 15, 14, 13, 12, 12, 12, 14, 15, 14, 12],
-          precipitation_probability: [10, 8, 6, 5, 5, 5, 10, 12, 15, 16, 14, 12],
-          precipitation: hourlyTimes.map(() => 0),
-          weather_code: [2, 2, 2, 1, 1, 2, 2, 3, 3, 3, 2, 2],
-          is_day: hourlyTimes.map((value) => { const hour = asDate(value).getHours(); return hour >= 7 && hour < 20 ? 1 : 0; }),
-        },
-      });
-      setWeatherUpdatedAt(Date.now());
-      setWxState("offline");
-      console.warn("[weather] using sample data:", error?.message || error);
+      const points = preciseMode ? await locateOnce() : null;
+      if (ctrl.signal.aborted) return;
+      if (preciseMode && !points) setLocationNotice('Precise location unavailable or outside Ithaca. Using Campus.');
+      timer = setTimeout(() => ctrl.abort(), 10000);
+      const payload = await fetchWeather({ points: points ?? CAMPUS_POINTS, signal: ctrl.signal, precise: !!points });
+      if (!mounted.current || ctrl.signal.aborted) return;
+      const at = Date.now();
+      weatherSnapshot.current = { at, data: payload };
+      setWx(payload); setWeatherUpdatedAt(at); setWxState('live');
+      // Precise lookups remain session-only, including their returned forecast.
+      if (!points) await storageSet(CACHE_KEY, JSON.stringify({ at, data: payload }));
+    } catch {
+      if (!mounted.current || weatherRequest.current !== ctrl) return;
+      setWxState(weatherSnapshot.current ? 'cached' : 'unavailable');
+    } finally {
+      clearTimeout(timer);
+      if (weatherRequest.current === ctrl) weatherRequest.current = null;
+      if (mounted.current && !weatherRequest.current) setWeatherRefreshing(false);
     }
-  }, []);
+  }, [preciseMode]);
 
-  useEffect(() => { loadWeather(); }, [loadWeather]);
+  useEffect(() => { loadWeather(); return () => { weatherRequest.current?.abort(); weatherRequest.current = null; }; }, [loadWeather]);
 
 
   useEffect(() => {
@@ -1477,7 +1274,7 @@ export default function Layer() {
       ? decodeWeather(current.code, current.isDay, current.precipRate)
       : null;
     const intervalMs = currentCond?.wet ? ACTIVE_RAIN_REFRESH_MS : WEATHER_REFRESH_MS;
-    const id = window.setInterval(() => loadWeather(true), intervalMs);
+    const id = window.setInterval(() => { if (document.visibilityState === "visible") loadWeather(true); }, intervalMs);
     return () => window.clearInterval(id);
   }, [loadWeather, wx?.current?.code, wx?.current?.precipRate, wx?.current?.isDay]);
 
@@ -1556,6 +1353,7 @@ export default function Layer() {
   const handleResetPersonalization = useCallback(async () => {
     if (resetBusy) return;
     setResetBusy(true);
+    modelRevision.current += 1;
 
     const empty = deepCopy(EMPTY_MODEL);
     // The sync layer clears queued feedback immediately and either clears the
@@ -1603,38 +1401,20 @@ export default function Layer() {
     [outingStart, duration]
   );
 
-  const plan = useMemo(() => {
-    if (!wx?.hourly?.time?.length) return null;
-    const startMs = outingStart.getTime();
-    const minutePlan = conditionWindow15(wx.minutely, wx.hourly, startMs, duration);
-    const hourlyIndex = getClosestIndex(wx.hourly.time, startMs);
-    const windowPlan = minutePlan ?? conditionWindow(wx.hourly, hourlyIndex, duration);
-
-    if (departAt == null && wx.current) {
-      const apparentValues = [wx.current.apparent, ...windowPlan.apparent].filter(Number.isFinite);
-      const rainRates = [wx.current.precipRate, ...(windowPlan.precipRates ?? [])].filter(Number.isFinite);
-      return {
-        ...windowPlan,
-        depart: {
-          ...windowPlan.depart,
-          actual: wx.current.actual,
-          apparent: wx.current.apparent,
-          wind: wx.current.wind,
-          gust: wx.current.gust ?? windowPlan.depart.gust ?? wx.current.wind,
-          precip: wx.current.precip,
-          precipRate: Number(wx.current.precipRate ?? windowPlan.depart.precipRate ?? 0),
-          code: wx.current.code,
-          time: now.toISOString(),
-          isDay: Number(wx.current.isDay ?? windowPlan.depart.isDay ?? 1),
-        },
-        minApparent: Math.round(Math.min(...apparentValues)),
-        maxApparent: Math.round(Math.max(...apparentValues)),
-        peakRainRate: Math.max(0, ...rainRates),
-      };
-    }
-
-    return windowPlan;
-  }, [wx, outingStart, duration, departAt, now]);
+  const correctionActive = activeCorrection(correction, now.getTime());
+  const displayWeather = useMemo(() => wx ? { ...wx, current: correctCurrent(wx.current, correction, now.getTime()) } : null, [wx, correction, now]);
+  const trust = weatherTrust(wx, weatherUpdatedAt, now.getTime());
+  const plan = useMemo(() => trust === 'unavailable' ? null : buildOuting(displayWeather,
+    Math.max(outingStart.getTime(), now.getTime()), duration, departAt == null),
+    [displayWeather, outingStart, duration, departAt, now, trust]);
+  const reportConditions = (kind) => {
+    const at = Date.now();
+    setNow(new Date(at));
+    setCorrection({ kind, at });
+    setCorrectionOpen(false);
+    // Coalesce an in-flight request; it is already an immediate refresh.
+    loadWeather(true);
+  };
 
   const result = useMemo(() => {
     if (!plan) return null;
@@ -1650,7 +1430,7 @@ export default function Layer() {
       ...laterConditions.map((condition) => condition.wetLevel || 0),
       rainIntensityFromRate(plan.peakRainRate),
     );
-    const outingWetLevel = Math.max(cond.wetLevel || 0, laterWetLevel);
+    const outingWetLevel = Math.max(cond.wetLevel || 0, laterWetLevel, plan.maxPrecip >= 45 ? 1 : 0);
     const snowSoon = !cond.snow && laterConditions.some((condition) => condition.snow);
     const heavyRainSoon = !snowSoon && cond.wetLevel < 3 && outingWetLevel >= 3;
     const rainSoon = !cond.wet && !snowSoon && !heavyRainSoon && (
@@ -1658,16 +1438,10 @@ export default function Layer() {
     );
 
     const base = plan.depart.apparent;
-    let eff = base + pooledOffset(model, base);
-    const windIntensity = clamp((plan.depart.wind - 6) / 14, 0, 1.4);
-    eff -= windIntensity * model.factors.wind;
-    if (cond.wet || cond.snow) eff -= model.factors.wet;
-    if (isDay && cond.clear && base > 66) eff += model.factors.sun;
-    eff += ACTIVITIES[activity].adj;
-    if (cycling) eff += base < 55 ? -4 : base < 72 ? -2 : -1;
-
-    const effective = Math.round(eff);
-    const baseBand = bandFor(effective);
+    const thermal = outingTemperature(plan, model, activity, cycling);
+    const eff = thermal.effective;
+    const effective = thermal.effective;
+    const baseBand = bandFor(thermal.wearEffective);
     let weatherLayers = isDay
       ? [...baseBand.layers]
       : baseBand.layers.filter((layer) => !/sun protection|sunglasses|shade/i.test(layer.label));
@@ -1691,6 +1465,12 @@ export default function Layer() {
       }));
     }
 
+    if (thermal.cooling && duration >= 60) {
+      const protection = bandFor(thermal.protective).layers.find(layer => isOuterwearLayer(layer.label))?.label || 'Sweater or fleece';
+      weatherLayers.push({ label: `Bring: ${protection}`, note: 'Add it for the colder part of your outing.' });
+    } else if (thermal.warming) {
+      weatherLayers = weatherLayers.map(layer => ({ ...layer, note: isOuterwearLayer(layer.label) ? 'Wear at departure; remove as it warms.' : layer.note }));
+    }
     const band = {
       ...baseBand,
       sub: cond.wetLevel >= 3
@@ -1706,8 +1486,8 @@ export default function Layer() {
     };
     const threats = threatsFor({
       effective,
-      wind: plan.depart.wind + (cycling ? 6 : 0),
-      gust: plan.depart.gust + (cycling ? 6 : 0),
+      wind: plan.peakWind + (cycling ? 6 : 0),
+      gust: plan.peakGust + (cycling ? 6 : 0),
       cond,
       precip: plan.maxPrecip,
       peakRainRate: plan.peakRainRate,
@@ -1730,7 +1510,7 @@ export default function Layer() {
     } else if (activity === "walking") {
       whyLines.push("Walking adds body heat, so Layer avoids unnecessary layers.");
     } else {
-      whyLines.push("This is a short trip, so Layer keeps the outfit light.");
+      whyLines.push("Sheltered travel reduces outdoor exposure, so Layer reduces insulation.");
     }
 
     if (cycling) {
@@ -1745,12 +1525,13 @@ export default function Layer() {
       whyLines.push(`This outfit covers about ${durationLabel(duration).toLowerCase()} outside.`);
     }
 
+    if (thermal.explanation) whyLines.splice(1, 0, thermal.explanation);
     return {
       effective,
       band,
       cond,
       threats,
-      extras: extrasFor(threats, cond),
+      extras: extrasFor(threats, cond).map(extra => ({ ...extra, text: departAt == null ? extra.text : extra.text.replaceAll(" now", " at departure") })),
       personalShift,
       displayShift,
       rangeText: `${plan.minApparent}°–${plan.maxApparent}°`,
@@ -1766,7 +1547,7 @@ export default function Layer() {
       cycling,
       isDay,
     };
-  }, [plan, model, activity, cycling, duration]);
+  }, [plan, model, activity, cycling, duration, departAt]);
 
   const metric = useMemo(() => {
     const usable = model.history.filter((h) => h.followed !== "no");
@@ -1796,6 +1577,7 @@ export default function Layer() {
     // The calibration math lives in ./lib/model (pure + unit-tested).
     const next = updateModel(withHistory, {
       apparentTemp: plan.depart.apparent,
+      weatherCorrected: Boolean(correction) || trust !== "recent",
       direction,
       blameKey,
       followed,
@@ -1805,7 +1587,7 @@ export default function Layer() {
 
     // Append to the cloud research log — richer than the trimmed local history,
     // and recorded for every outcome including "didn't follow".
-    logEvent({
+    if (!correction && trust === "recent") logEvent({
       apparent: plan.depart.apparent,
       effective: result.effective,
       actual: plan.depart.actual,
@@ -1826,7 +1608,7 @@ export default function Layer() {
 
     setAskBlame(null);
     setToast(
-      followed === "no"
+      correction || trust !== "recent" ? "Saved without adjusting your comfort profile because weather was uncertain." : followed === "no"
         ? "Thanks — your feedback was saved."
         : direction === 0
           ? "Locked in — I’ll keep reading days like this similarly."
@@ -1836,7 +1618,7 @@ export default function Layer() {
               ? "Got it — I’ll call the next one warmer."
               : "Got it — I’ll lighten the next call."
     );
-  }, [plan, result, model, activity, followed, commit, departAt, duration, cycling, wx, now]);
+  }, [plan, result, model, activity, followed, commit, departAt, duration, cycling, wx, now, correction, trust]);
 
   const onFeedback = (kind) => {
     if (kind === "right") applyFeedback(0, null);
@@ -1862,6 +1644,10 @@ export default function Layer() {
   if (restoringSignedInProfile) {
     return <LoadingScreen message="Loading your saved Layer profile…" />;
   }
+  if (accountRestoreError) return <div className="lyr weather-cloudy loading-screen"><style>{css}</style><main className="card glass unavailable" role="status">
+    <h1>Your saved profile couldn’t load</h1><p>Your account is signed in. Retry to restore your saved personalization.</p>
+    <button className="profile-primary" onClick={() => { adoptedSignIn.current = 0; setAccountRestoreError(false); setRestoreAttempt(n => n+1); }}>Retry profile</button>
+  </main></div>;
   if (!model.seeded) {
     return (
       <Onboarding
@@ -1874,16 +1660,24 @@ export default function Layer() {
       />
     );
   }
-  if (!plan || !result) return <LoadingScreen />;
+  if (!plan || !result) {
+    if (weatherRefreshing && !wx) return <LoadingScreen />;
+    return <div className="lyr weather-cloudy loading-screen"><style>{css}</style>
+      <main className="card glass unavailable" role="status"><h1>Weather unavailable</h1>
+      <p>We couldn’t get trustworthy weather for this outing. Check your connection and try again.</p>
+      <button className="profile-primary" onClick={handleManualRefresh} disabled={weatherRefreshing}>{weatherRefreshing ? 'Refreshing…' : 'Retry'}</button>
+      {departAt != null && <button className="profile-secondary" onClick={() => setDepartAt(null)}>Return to now</button>}
+      </main></div>;
+  }
 
   const cond = result.cond;
-  const ConditionIcon = cond.Icon;
-  const liveWeatherCode = wx?.current?.code ?? plan.depart.code ?? 3;
+
+  const liveWeatherCode = displayWeather?.current?.code ?? plan.depart.code ?? 3;
   const liveIsDay = Number(wx?.current?.isDay ?? plan.depart.isDay ?? 1) !== 0;
   const liveCond = decodeWeather(
     liveWeatherCode,
     liveIsDay ? 1 : 0,
-    Number(wx?.current?.precipRate ?? 0),
+    Number(displayWeather?.current?.precipRate ?? 0),
   );
   const scene = {
     key: liveCond.category,
@@ -1896,19 +1690,11 @@ export default function Layer() {
   const learningProgress = Math.min(95, Math.round((ratingCount / (ratingCount + 4)) * 100));
   const learningLabel = ratingCount === 0 ? "Starting profile" : `${learningProgress}% learned`;
   const planningSummary = `${departAt == null ? "Leaving now" : `Leaving ${formatTime(outingStart)}`} • ${DURATIONS.find((d) => d.minutes === duration)?.label || `${duration} min`} outside${cycling ? " • Cycling" : ""}`;
-  const weatherAgeMinutes = weatherUpdatedAt == null ? null : Math.max(0, Math.floor((now.getTime() - weatherUpdatedAt) / 60000));
-  const weatherAgeText = weatherRefreshing
-    ? "Checking campus…"
-    : weatherAgeMinutes == null
-      ? ""
-      : wxState === "cached"
-        ? weatherAgeMinutes < 1 ? "Cached just now" : `Cached ${weatherAgeMinutes} min ago`
-        : wxState === "offline"
-          ? "Sample data"
-          : weatherAgeMinutes < 1 ? "Updated now" : `Updated ${weatherAgeMinutes} min ago`;
-  const conditionText = departAt == null && wx?.current?.rainScope === "nearby" && cond.wet
-    ? "Passing rain around campus"
-    : cond.label;
+  const weatherAgeMinutes = weatherUpdatedAt == null ? null : Math.max(0, Math.floor((now.getTime() - Math.min(weatherUpdatedAt, timeMs(wx.current.time))) / 60000));
+  const weatherAgeText = `${trust === 'stale' ? 'Last known conditions · ' : ''}${weatherRefreshing ? 'Refreshing · ' : ''}${weatherAgeMinutes < 1 ? 'Updated now' : `Updated ${weatherAgeMinutes} min ago`}`;
+  const ConditionIcon = liveCond.Icon;
+  const conditionText = correctionActive ? `${correctionActive.kind === 'rain' ? 'Raining here' : correctionActive.kind === 'snow' ? 'Snowing here' : 'Dry here'} · your report`
+    : ['nearby','campus'].includes(wx?.current?.rainScope) && liveCond.wet ? 'Passing shower around campus' : liveCond.label;
 
   return (
     <div
@@ -1932,7 +1718,7 @@ export default function Layer() {
         style={{ backgroundImage: `url(${scene.src})` }}
         aria-hidden="true"
       />
-      {liveCond.category === "rain" && !rainVideoFailed && (
+      {liveCond.category === "rain" && !rainVideoFailed && !reducedMotion && (
         <video
           ref={rainVideoRef}
           key={`rain-video-${liveCond.wetLevel}-${rainVideoVersion}`}
@@ -1959,14 +1745,14 @@ export default function Layer() {
       <div className="app-shell">
         <header className="topbar">
           <div className="campus-id">
-            <div className="campus-line"><MapPin size={14} strokeWidth={2.4} /><span>{CAMPUS.title}</span><small>{CAMPUS.subtitle}</small></div>
+            <div className="campus-line"><MapPin size={14} strokeWidth={2.4} /><span>{CAMPUS.title}</span><small>{wx.locationLabel || "Campus"}</small></div>
           </div>
           <div className="top-actions">
-            {wxState === "offline" && <span className="pill">sample data</span>}
+            
             <button
               className={`round-btn${weatherRefreshing ? " is-refreshing" : ""}`}
               onClick={handleManualRefresh}
-              aria-label={weatherRefreshing ? "Refreshing weather" : "Refresh weather and rain animation"}
+              aria-label={weatherRefreshing ? "Refreshing weather" : "Refresh weather"}
               aria-busy={weatherRefreshing}
               title={weatherAgeText || "Refresh weather"}
             >
@@ -1998,7 +1784,7 @@ export default function Layer() {
             <div className="reads">
               <div className="read">
                 <span className="read-k">{departAt == null ? "Temperature" : "Forecast"}</span>
-                <span className="read-v">{plan.depart.actual}°</span>
+                <span className="read-v">{Math.round(plan.depart.actual)}°</span>
               </div>
               <ArrowRight size={18} strokeWidth={2.4} className="read-arrow" />
               <div className="read read-you">
@@ -2012,7 +1798,15 @@ export default function Layer() {
                 </span>
               )}
             </div>
+            {trust === 'stale' && <p className="trust-note" role="status">Last known conditions. This outfit uses weather that may be outdated.</p>}
             <div className="hero-foot"><span>{planningSummary}</span>{weatherAgeText && <span className="weather-age" role="status" aria-live="polite">{weatherAgeText}</span>}</div>
+            <div className="weather-controls">
+              <button className="weather-link" onClick={() => { setLocationNotice(null); setPreciseMode(v => !v); }}>{preciseMode ? 'Use campus location' : 'Use my location'}</button>
+              <button className="weather-link" aria-expanded={correctionOpen} onClick={() => setCorrectionOpen(v => !v)}>Conditions look wrong?</button>
+            </div>
+            {locationNotice && <p role="status">{locationNotice}</p>}
+            {correctionOpen && <div className="chips">{[['rain','Raining here'],['snow','Snowing here'],['dry','Dry here']].map(([kind,label]) => <button className="chip" key={kind} onClick={() => reportConditions(kind)}>{label}</button>)}</div>}
+            {correctionActive && <p className="trust-note" role="status">Your report applies for 15 minutes on this device. <button className="weather-link" onClick={() => setCorrection(null)}>Clear report</button></p>}
           </section>
 
           <aside className="planner glass card compact-planner planner-card">
@@ -2113,7 +1907,7 @@ export default function Layer() {
                 )}
                 {result.snowSoon && <span><Snowflake size={14} strokeWidth={2.4} /> Snow may begin before you return.</span>}
                 {result.heavyRainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Rain could become heavy before you return.</span>}
-                {result.rainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Chance of rain rises to about {result.peakPrecip}% before you return.</span>}
+                {result.rainSoon && <span><Umbrella size={14} strokeWidth={2.4} /> Rain is possible before you return. Pack rain protection.</span>}
                 {result.cycling && <span><Bike size={14} strokeWidth={2.4} /> Cycling will make the wind feel stronger.</span>}
               </div>
             )}
@@ -2193,7 +1987,7 @@ export default function Layer() {
               </div>
             ) : (
               <div className="blame">
-                <div className="blame-h"><span>What affected your comfort?</span><button className="icon-btn" onClick={() => setAskBlame(null)}><X size={15} strokeWidth={2.4} /></button></div>
+                <div className="blame-h"><span>What affected your comfort?</span><button className="icon-btn" aria-label="Cancel feedback" onClick={() => setAskBlame(null)}><X size={15} strokeWidth={2.4} /></button></div>
                 <div className="blame-list">
                   {result?.threats.filter((t) => (result.isDay || t.key !== "sun") && (askBlame === "cold" ? t.key !== "sun" : true)).map((t) => {
                     const T = t.Icon;
@@ -2209,7 +2003,7 @@ export default function Layer() {
             )}
             </>
             )}
-            {toast && <div className="toast">{toast}</div>}
+            {toast && <div className="toast" role="status">{toast}</div>}
           </section>
 
           <section id="personalization-section" className="card glass main-card calibration-card">
@@ -2326,7 +2120,7 @@ export default function Layer() {
             <div className="profile-storage-list">
               <div className="profile-storage-row profile-storage-compact">
                 <HardDrive size={19} strokeWidth={2.1} />
-                <div><strong>Saved on this device</strong><span>Layer keeps working even when you are offline.</span></div>
+                <div><strong>Saved on this device</strong><span>Your saved profile stays here. Fresh weather requires a connection.</span></div>
                 <Check size={18} strokeWidth={2.4} className="profile-ok" />
               </div>
               <div className="profile-storage-row profile-storage-compact">
@@ -2422,12 +2216,17 @@ export default function Layer() {
 }
 
 const css = `
+.unavailable { width:min(480px, calc(100% - 32px)); }
+.weather-controls { display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:12px; }
+.weather-link { background:transparent; border:0; color:inherit; text-decoration:underline; text-underline-offset:4px; cursor:pointer; padding:8px 0; min-height:44px; }
+.trust-note { font-size:14px; line-height:1.5; padding:12px; background:rgba(10,22,38,.6); border-radius:12px; }
+
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Instrument+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
 
 .lyr {
   --ink: #112033;
   --muted: rgba(242, 246, 255, 0.84);
-  --muted-dark: #6c7a90;
+  --muted-dark: #4C5B70;
   min-height: 100vh;
   width: 100%;
   max-width: 100%;
@@ -2624,7 +2423,7 @@ const css = `
   background: #EEF1F7; color: #5D6D86; font-weight: 700;
 }
 .chip.on, .mini-chip.on {
-  background: rgba(238, 179, 73, .16); color: var(--accent); box-shadow: inset 0 0 0 1px rgba(234, 177, 73, .65);
+  background: rgba(238, 179, 73, .16); color: #46556A; box-shadow: inset 0 0 0 1px rgba(234, 177, 73, .65);
 }
 .toggle-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -2633,7 +2432,7 @@ const css = `
 .toggle-copy { display:flex; gap: 12px; align-items: center; }
 .toggle-copy span { display:flex; flex-direction: column; }
 .toggle-copy small { color: var(--muted-dark); font-size: 12px; }
-.toggle-row input { display: none; }
+.toggle-row input { position:absolute; opacity:0; width:1px; height:1px; }
 .toggle-ui {
   width: 44px; height: 26px; border-radius: 999px; background: #D7DCE5; position: relative; transition: .2s ease;
 }
@@ -2646,7 +2445,7 @@ const css = `
 .ride-toggle { margin-top: 14px; }
 .ride-toggle strong { font-size: 14px; }
 .planner-summary {
-  margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(17, 32, 51, .08); color: #54657f;
+  margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(17, 32, 51, .08); color: #46556A;
   display: flex; justify-content: space-between; gap: 10px; font-weight: 600; flex-wrap: wrap;
 }
 .planner-summary span { display:inline-flex; align-items:center; gap:8px; }
@@ -2665,7 +2464,7 @@ const css = `
   flex-shrink: 0; background: #FAF2DF; color: #8A641F; font-family:'DM Mono', monospace;
   font-size: 9px; font-weight: 600; letter-spacing: .08em;
 }
-.wear-num { font-size: 18px; color: var(--accent); width: 20px; text-align: right; }
+.wear-num { font-size: 18px; color: #46556A; width: 20px; text-align: right; }
 .wear-txt { display:flex; flex-direction: column; gap: 4px; flex: 1; }
 .wear-name { font-size: 22px; font-weight: 600; }
 .wear-note { font-size: 15px; color: var(--muted-dark); }
@@ -2687,7 +2486,7 @@ const css = `
   text-align: left;
 }
 .why-toggle > span { display: inline-flex; align-items: center; gap: 9px; }
-.why-toggle svg { color: var(--accent); }
+.why-toggle svg { color: #46556A; }
 .why-toggle .open { transform: rotate(180deg); }
 .why-panel {
   margin-top: 10px;
@@ -2698,17 +2497,17 @@ const css = `
   line-height: 1.48;
 }
 .why-panel ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
-.why-panel li::marker { color: var(--accent); }
+.why-panel li::marker { color: #46556A; }
 .tipbar {
   margin: 10px -26px -24px; padding: 16px 22px; display:grid; gap: 10px;
   background: linear-gradient(180deg, rgba(248,243,232,1) 0%, rgba(249,245,236,.96) 100%); border-top: 1px solid rgba(227, 206, 158, .45);
 }
 .tip { display:flex; gap: 10px; align-items:flex-start; color:#42526a; font-size: 15px; }
-.tip svg { color: var(--accent); flex-shrink: 0; }
+.tip svg { color: #46556A; flex-shrink: 0; }
 .warnbar { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 12px; color: #5f6f85; font-size: 14px; }
 .warnbar span { display: inline-flex; align-items: center; gap: 8px; background:#F7F8FB; padding: 10px 12px; border-radius: 12px; }
-.warnbar svg { color: var(--accent); flex-shrink: 0; }
-.card-sub { margin:4px 0 0; color:#718097; font-size:12.5px; line-height:1.35; }
+.warnbar svg { color: #46556A; flex-shrink: 0; }
+.card-sub { margin:4px 0 0; color:#4C5B70; font-size:12.5px; line-height:1.35; }
 .activity-head { align-items:flex-start; }
 .acts { display:flex; gap: 14px; }
 .act {
@@ -2717,7 +2516,7 @@ const css = `
 }
 .act svg { color: #69788F; }
 .act.on { background: rgba(248, 242, 225, .95); box-shadow: inset 0 0 0 2px rgba(234,177,73,.8); }
-.act.on svg, .act.on .act-l { color: #B77A16; }
+.act.on svg, .act.on .act-l { color: #4C5B70; }
 .act-l { font-size: 18px; font-weight: 700; }
 .act-h { color: var(--muted-dark); font-size: 13px; }
 .threat-head {
@@ -2771,16 +2570,16 @@ const css = `
 .toast { margin-top: 14px; padding: 12px 14px; border-radius: 14px; background: rgba(238,179,73,.12); color:#875C12; }
 .metric { padding-bottom: 18px; margin-bottom: 18px; border-bottom: 1px solid rgba(17,32,51,.08); }
 .metric-main { display:flex; align-items:center; gap: 16px; }
-.metric-v { font-family:'Outfit', sans-serif; font-size: 54px; line-height: 1; font-weight: 800; color: var(--accent); }
+.metric-v { font-family:'Outfit', sans-serif; font-size: 54px; line-height: 1; font-weight: 800; color: #46556A; }
 .metric-k { color:#586781; max-width: 270px; }
 .delta { display:inline-flex; align-items:center; gap: 6px; margin-top: 10px; color:#66758A; font-size: 14px; font-weight: 700; }
 .delta.up { color: #3D9560; }
 .spark { display:flex; gap: 4px; margin-top: 14px; }
 .sp { width: 18px; height: 18px; border-radius: 4px; background: rgba(17,32,51,.09); }
 .sp.right { background: #6FB558; } .sp.cold { background: #7FB6DD; } .sp.warm { background: #E9B93F; }
-.empty { margin: 0 0 18px; color:#62728A; }
+.empty { margin: 0 0 18px; color:#4C5B70; }
 .calibration-head { align-items: flex-start; }
-.calibration-copy { margin: 8px 0 0; color:#62728A; line-height:1.45; max-width:560px; }
+.calibration-copy { margin: 8px 0 0; color:#4C5B70; line-height:1.45; max-width:560px; }
 .personalization-summary {
   display:flex; flex-wrap:wrap; gap:10px; margin: 0 0 18px;
 }
@@ -2934,7 +2733,7 @@ const css = `
 }
 .ob-backup > svg { color:#61718A; }
 .ob-backup strong { display:block; font-size:13.5px; }
-.ob-backup small { display:block; margin-top:3px; color:#718097; font-size:11.5px; line-height:1.35; }
+.ob-backup small { display:block; margin-top:3px; color:#4C5B70; font-size:11.5px; line-height:1.35; }
 .ob-backup input { position:absolute; opacity:0; pointer-events:none; }
 .toggle-ui {
   position:relative; width:42px; height:24px; border-radius:999px; background:#CFD8E3;
@@ -2964,7 +2763,7 @@ const css = `
 .ob-go:hover:not(:disabled) { background:#24384F; transform:translateY(-1px); }
 .ob-go:active:not(:disabled) { transform:translateY(0); }
 .ob-go:disabled { opacity:.42; cursor:not-allowed; box-shadow:none; }
-.ob-note { margin:11px 0 0; color:#7A8799; text-align:center; font-size:11.5px; line-height:1.4; }
+.ob-note { margin:11px 0 0; color:#4C5B70; text-align:center; font-size:11.5px; line-height:1.4; }
 .sync-status { display:inline-flex; align-items:center; }
 .sync-active { color:#2F855A !important; background:#E7F4EC !important; }
 .sync-unavailable { color:#9A6A2E !important; background:#F6EEE0 !important; }
@@ -2973,7 +2772,7 @@ const css = `
 .cloud-control-btn { border:1px solid #D3DDEA; background:white; color:#43506A; cursor:pointer; border-radius:12px; padding:9px 12px; font-weight:700; font-size:12.5px; }
 .cloud-control-btn:hover:not(:disabled) { background:#F5F8FC; }
 .cloud-control-btn:disabled { opacity:.55; cursor:default; }
-.cloud-controls span { color:#718097; font-size:12.5px; line-height:1.4; }
+.cloud-controls span { color:#4C5B70; font-size:12.5px; line-height:1.4; }
 .upgrade-card { position:relative; border:1px solid #E4EBF3; }
 .upgrade-x { position:absolute; top:14px; right:14px; border:none; background:none; cursor:pointer; color:#9AA6B8; padding:4px; border-radius:8px; }
 .upgrade-x:hover { color:#43506A; background:#F1F5FA; }
@@ -2981,7 +2780,7 @@ const css = `
 .upgrade-p { color:#5C6A82; font-size:13.5px; line-height:1.5; margin:0 0 14px; max-width:46ch; }
 .upgrade-row { display:flex; gap:8px; }
 .upgrade-input { flex:1; min-width:0; border:1px solid #D3DDEA; border-radius:12px; padding:11px 13px; font-size:14px; font-family:'Instrument Sans', sans-serif; color:var(--ink); background:white; }
-.upgrade-input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.upgrade-input:focus { outline:none; border-color:#46556A; box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .upgrade-go { border:none; cursor:pointer; background:var(--ink); color:white; border-radius:12px; padding:11px 18px; font-weight:700; font-size:14px; }
 .upgrade-go:disabled { opacity:.5; cursor:default; }
 .upgrade-err { margin-top:9px; color:#B4462F; font-size:12.5px; }
@@ -3009,7 +2808,7 @@ const css = `
   background:#4BB477; border:2px solid rgba(23,42,64,.92); box-shadow:0 0 0 1px rgba(255,255,255,.3);
 }
 .profile-section-label {
-  margin:18px 2px 9px; color:#7A8799;
+  margin:18px 2px 9px; color:#4C5B70;
   font:700 10.5px 'DM Mono',monospace; letter-spacing:.1em; text-transform:uppercase;
 }
 .account-block-muted { background:#F6F8FB; }
@@ -3046,15 +2845,15 @@ const css = `
 .profile-stat-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:18px; }
 .profile-stat { padding:16px; border-radius:18px; background:#F1F4F8; display:flex; flex-direction:column; gap:4px; }
 .profile-stat strong { font-family:'Outfit', sans-serif; font-size:22px; }
-.profile-stat span { color:#718097; font-size:12.5px; }
+.profile-stat span { color:#4C5B70; font-size:12.5px; }
 .profile-storage-list { display:grid; gap:10px; }
 .profile-storage-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:12px; align-items:start; padding:15px; border:1px solid #E4EAF1; border-radius:18px; background:white; }
-.profile-storage-row > svg:first-child { color:#62728A; margin-top:2px; }
+.profile-storage-row > svg:first-child { color:#4C5B70; margin-top:2px; }
 .profile-storage-row strong { display:block; margin-bottom:3px; font-size:14px; }
-.profile-storage-row span { display:block; color:#718097; font-size:12.5px; line-height:1.45; }
+.profile-storage-row span { display:block; color:#4C5B70; font-size:12.5px; line-height:1.45; }
 .profile-ok { color:#4AA56A; }
 .profile-storage-compact { align-items:center; }
-.profile-note { margin:12px 2px 0; color:#718097; font-size:12.5px; line-height:1.45; }
+.profile-note { margin:12px 2px 0; color:#4C5B70; font-size:12.5px; line-height:1.45; }
 .account-block { margin-top:18px; padding:16px; border-radius:18px; background:#F5F8FC; border:1px solid #E4EAF1; }
 .account-head { display:flex; align-items:center; gap:8px; font-family:'Outfit', sans-serif; font-weight:700; font-size:13.5px; color:#26344A; }
 .account-head svg { color:#4C7FB8; }
@@ -3078,7 +2877,7 @@ const css = `
 .account-status { margin:11px 0 0; font-size:12.5px; line-height:1.45; }
 .account-status.error { color:#B4462F; }
 .account-status.sent, .account-status.ok { color:#2F855A; }
-.account-fine { margin:12px 0 0; color:#8490A2; font-size:11.5px; line-height:1.45; }
+.account-fine { margin:12px 0 0; color:#4C5B70; font-size:11.5px; line-height:1.45; }
 .email-sent-overlay {
   --ink:#112033;
   position:fixed; inset:0; z-index:2147483600; width:100%; height:100vh; height:100dvh;
@@ -3131,7 +2930,7 @@ const css = `
   box-shadow:0 10px 24px rgba(17,32,51,.18);
 }
 .email-open-btn:hover { background:#263A52; }
-.email-sent-tip { margin:13px auto 0; max-width:44ch; color:#7A8799; font-size:11.5px; line-height:1.5; }
+.email-sent-tip { margin:13px auto 0; max-width:44ch; color:#4C5B70; font-size:11.5px; line-height:1.5; }
 .email-change-btn {
   margin-top:8px; min-height:38px; border:0; background:transparent; color:#526D91;
   font:700 12px 'Instrument Sans',sans-serif; cursor:pointer;
@@ -3181,10 +2980,10 @@ const css = `
 
 .profile-about {
   margin-top:18px; padding-top:14px; border-top:1px solid #E2E8F0;
-  display:grid; gap:4px; color:#7A8799; font-size:11.5px; line-height:1.5;
+  display:grid; gap:4px; color:#4C5B70; font-size:11.5px; line-height:1.5;
 }
 .profile-about strong {
-  color:#526178; font:700 10.5px 'DM Mono',monospace; letter-spacing:.08em; text-transform:uppercase;
+  color:#46556A; font:700 10.5px 'DM Mono',monospace; letter-spacing:.08em; text-transform:uppercase;
 }
 .profile-about a { color:#526D91; text-underline-offset:2px; }
 .profile-about a:hover { color:#263A52; }
