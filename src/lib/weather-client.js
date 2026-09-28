@@ -2,6 +2,8 @@ import { rainSignalFromLocation, campusRainConsensus } from './weather';
 
 export const CACHE_KEY = 'layer:wx-cache:v8'; // v7 may contain synthetic weather
 export const STALE_MS = 15 * 60_000;
+// Current conditions use 15-minute steps; allow two intervals for normal provider cadence.
+export const SOURCE_STALE_MS = 30 * 60_000;
 export const MAX_CACHE_MS = 24 * 60 * 60_000;
 export const CAMPUS_POINTS = [[42.4534,-76.4735],[42.4603,-76.478],[42.448,-76.463],[42.446,-76.482],[42.461,-76.465]];
 export const timeMs = value => typeof value === 'number' ? value * 1000 : Date.parse(value);
@@ -22,12 +24,26 @@ export function readWeatherCache(raw, now = Date.now()) {
 }
 export function weatherTrust(data, updatedAt, now = Date.now()) {
   if (!usableWeather(data) || !finite(updatedAt)) return 'unavailable';
-  const age = Math.max(now - updatedAt, now - timeMs(data.current.time));
-  return age > MAX_CACHE_MS ? 'unavailable' : age > STALE_MS ? 'stale' : 'recent';
+  const retrievalAge = now - updatedAt, sourceAge = now - timeMs(data.current.time);
+  if (Math.max(retrievalAge, sourceAge) > MAX_CACHE_MS) return 'unavailable';
+  return retrievalAge > STALE_MS || sourceAge > SOURCE_STALE_MS ? 'stale' : 'recent';
+}
+export function weatherFreshness(updatedAt, now, trust, refreshing, failed) {
+  if (refreshing) return 'Updating…';
+  if (trust === 'unavailable') return 'Weather unavailable';
+  if (trust === 'stale') return 'Weather may be outdated';
+  if (failed) return 'Couldn’t update · Showing recent weather';
+  const minutes = Math.max(0, Math.floor((now - updatedAt) / 60_000));
+  return minutes < 1 ? 'Updated now' : `Updated ${minutes} min ago`;
+}
+export function locationIssue(coords) {
+  const { latitude: lat, longitude: lon, accuracy } = coords ?? {};
+  if (![lat, lon, accuracy].every(finite) || accuracy < 0 || accuracy > 500) return 'unavailable';
+  return Math.hypot((lat - 42.4534) * 111, (lon + 76.4735) * 82) > 8 ? 'outside' : null;
 }
 export function precisePoints(coords) {
   const { latitude: lat, longitude: lon, accuracy } = coords ?? {};
-  if (![lat, lon, accuracy].every(finite) || accuracy < 0 || accuracy > 500) return null;
+  if (locationIssue(coords)) return null;
   // Cornell/Ithaca only, approximately 8 km from central campus.
   const km = Math.hypot((lat - 42.4534) * 111, (lon + 76.4735) * 82);
   if (km > 8) return null;
@@ -35,8 +51,8 @@ export function precisePoints(coords) {
 }
 export function locateOnce(geolocation = globalThis.navigator?.geolocation) {
   return new Promise(resolve => {
-    if (!geolocation) return resolve(null);
-    geolocation.getCurrentPosition(p => resolve(precisePoints(p.coords)), () => resolve(null),
+    if (!geolocation) return resolve({ points: null, issue: 'unavailable' });
+    geolocation.getCurrentPosition(p => resolve({ points: precisePoints(p.coords), issue: locationIssue(p.coords) }), () => resolve({ points: null, issue: 'unavailable' }),
       { enableHighAccuracy: false, maximumAge: 0, timeout: 8000 });
   });
 }

@@ -14,7 +14,7 @@ function response(mode='dry') {
 }
 async function setup(page,mode='dry',seed=true) {
   await page.clock.install({time:clock});
-  if(seed) await page.addInitScript(()=>localStorage.setItem('layer:model:v5',JSON.stringify({v:5,seeded:true,regime:{cold:{off:0,n:0},mild:{off:0,n:0},warm:{off:0,n:0}},factors:{wind:0,wet:0,sun:0},history:[]})));
+  if(seed) await page.addInitScript(()=>!localStorage.getItem('layer:model:v5') && localStorage.setItem('layer:model:v5',JSON.stringify({v:5,seeded:true,regime:{cold:{off:0,n:0},mild:{off:0,n:0},warm:{off:0,n:0}},factors:{wind:0,wet:0,sun:0},history:[]})));
   await page.route('**/api.open-meteo.com/**',route=>mode==='fail'?route.abort():route.fulfill({json:response(mode)}));
   await page.goto('/');
 }
@@ -74,7 +74,7 @@ for(const age of [60_000,3600_000]) test(`cache age ${age} survives failure and 
   await page.addInitScript(({data,at})=>localStorage.setItem('layer:wx-cache:v8',JSON.stringify({data,at})),{data,at:clock.getTime()-age});
   await setup(page,'fail');
   await expect(page.getByText('Wear this',{exact:true})).toBeVisible();
-  if(age>900000) await expect(page.locator('.weather-age')).toContainText('Last known conditions');
+  if(age>900000) await expect(page.locator('.weather-age')).toContainText('Weather may be outdated');
   await page.unroute('**/api.open-meteo.com/**');
   await page.route('**/api.open-meteo.com/**',r=>r.fulfill({json:response()}));
   await page.getByRole('button',{name:'Refresh weather',exact:true}).click();
@@ -118,14 +118,14 @@ test('manual refresh and simultaneous visibility/focus events share one request 
   await page.evaluate(()=>{window.dispatchEvent(new Event('focus'));window.dispatchEvent(new Event('pageshow'));document.dispatchEvent(new Event('visibilitychange'));});
   await expect.poll(()=>requests).toBe(2);
   release();
-  await expect(page.locator('.weather-age')).not.toContainText('Refreshing');
+  await expect(page.locator('.weather-age')).not.toContainText('Updating…');
   expect(requests).toBe(2);
 });
 test('denied location falls back to campus without blocking weather',async({page})=>{
   await page.addInitScript(()=>Object.defineProperty(navigator,'geolocation',{value:{getCurrentPosition:(_,error)=>error({code:1})}}));
   await setup(page);
   await page.getByRole('button',{name:'Use my location',exact:true}).click();
-  await expect(page.getByText('Precise location unavailable or outside Ithaca. Using Campus.')).toBeVisible();
+  await expect(page.getByText('Location unavailable. Using Cornell campus weather.')).toBeVisible();
   await expect(page.getByText('Wear this',{exact:true})).toBeVisible();
 });
 test('onboarding and unavailable state pass automated accessibility checks',async({page})=>{
@@ -140,4 +140,73 @@ test('onboarding and unavailable state pass automated accessibility checks',asyn
   await page.getByRole('button',{name:'See my recommendation'}).click();
   await expect(page.getByRole('heading',{name:'Weather unavailable'})).toBeVisible();
   await audit();
+});
+
+for (const minutes of [9,16,31]) test(`fresh fetch with provider age ${minutes} minutes`,async({page})=>{
+  await setup(page);
+  await expect(page.locator('.weather-age')).toHaveText('Updated now');
+  await page.unroute('**/api.open-meteo.com/**');
+  let release; const gate=new Promise(r=>release=r);
+  await page.route('**/api.open-meteo.com/**',async r=>{
+    await gate;const data=response();data.current.time=epoch-minutes*60;await r.fulfill({json:data});
+  });
+  try {
+    await page.getByRole('button',{name:'Refresh weather',exact:true}).click();
+    await expect(page.locator('.weather-age')).toHaveText('Updating…');
+  } finally { release(); }
+  await expect(page.locator('.weather-age')).toHaveText(minutes>30?'Weather may be outdated':'Updated now');
+  await expect(page.locator('.hero [role=status]').filter({hasText:/Updated|Updating|outdated/})).toHaveCount(1);
+  if(minutes>30){
+    await expect(page.getByText('Weather may be outdated',{exact:true})).toHaveCount(1);
+    await expect(page.getByRole('button',{name:'Refresh',exact:true})).toBeVisible();
+    for (const width of [320,375,430,768]) {
+      await page.setViewportSize({width,height:900});
+      expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+      await page.screenshot({path:`test-results/freshness-stale-${width}.png`,fullPage:false});
+    }
+    const audit=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa']).analyze();
+    expect(audit.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,reason:n.failureSummary}))}))).toEqual([]);
+  }
+});
+test('failed refresh retains recent weather with one compact status',async({page})=>{
+  await setup(page);
+  await expect(page.locator('.weather-age')).toHaveText('Updated now');
+  await page.unroute('**/api.open-meteo.com/**');
+  await page.route('**/api.open-meteo.com/**',r=>r.abort());
+  await page.getByRole('button',{name:'Refresh weather',exact:true}).click();
+  await expect(page.locator('.weather-age')).toHaveText('Couldn’t update · Showing recent weather');
+  await expect(page.getByText('Wear this',{exact:true})).toBeVisible();
+});
+for(const [coords,notice] of [
+  [{latitude:40,longitude:-73,accuracy:20},'Layer supports the Ithaca area. Showing Cornell campus weather.'],
+  [{latitude:42.454321,longitude:-76.475678,accuracy:900},'Location unavailable. Using Cornell campus weather.'],
+]) test(`location fallback: ${notice}`,async({page,context})=>{
+  await context.grantPermissions(['geolocation']);await context.setGeolocation(coords);await setup(page);
+  await page.getByRole('button',{name:'Use my location',exact:true}).click();
+  await expect(page.getByText(notice)).toBeVisible();
+  await expect(page.locator('.campus-line small')).toHaveText('Campus');
+  const storage=await page.evaluate(()=>JSON.stringify(localStorage));
+  expect(storage).not.toContain(String(coords.longitude));
+});
+test('feedback streak stays in feedback section and does not train just-right ratings',async({page})=>{
+  await page.emulateMedia({reducedMotion:'reduce'});await setup(page);
+  const before=await page.evaluate(()=>JSON.parse(localStorage.getItem('layer:model:v5')));
+  await page.getByRole('button',{name:'Rate this outing'}).click();
+  await page.getByRole('button',{name:'Just right',exact:true}).click();
+  await expect(page.locator('.feedback-streak')).toHaveText('1-day feedback streak');
+  await expect(page.locator('.toast')).toHaveText('Thanks — another outing rated.');
+  await expect(page.locator('.hero')).not.toContainText('streak');
+  const after=await page.evaluate(()=>JSON.parse(localStorage.getItem('layer:model:v5')));
+  expect(after.regime).toEqual(before.regime);expect(after.factors).toEqual(before.factors);
+  await page.getByRole('button',{name:'No',exact:true}).click();
+  await page.getByRole('button',{name:'Too cold',exact:true}).click();
+  await page.getByRole('button',{name:'Not sure'}).click();
+  const unrated=await page.evaluate(()=>JSON.parse(localStorage.getItem('layer:model:v5')));
+  expect(unrated.history).toHaveLength(2);expect(unrated.regime).toEqual(before.regime);
+  await page.reload();await expect(page.locator('.feedback-streak')).toHaveText('1-day feedback streak');
+  await page.setViewportSize({width:375,height:812});
+  const audit=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa']).analyze();
+  expect(audit.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,reason:n.failureSummary}))}))).toEqual([]);
+  await page.setViewportSize({width:844,height:390});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });

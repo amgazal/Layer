@@ -16,3 +16,15 @@ for(const file of files){
 }
 if(failures)process.exit(1);
 console.log(`No private-key, Supabase secret-key, or service-role JWT patterns in ${files.length} tracked/build files.`);
+
+// Scan shipped application sources, not documentation or test fixtures.
+const appFiles = [...walk('src'), ...walk('public'), 'index.html'].filter(file =>
+  /\.(js|jsx|mjs|html)$/.test(file) && !/\.test\./.test(file));
+const pickerCall = /\b(?:showOpenFilePicker|showSaveFilePicker|showDirectoryPicker)\s*\(|\[\s*['"](?:showOpenFilePicker|showSaveFilePicker|showDirectoryPicker)['"]\s*\]\s*\(/;
+for (const file of appFiles) {
+  if (pickerCall.test(fs.readFileSync(file, 'utf8'))) {
+    console.error(`Unreviewed filesystem picker call in ${file}`);
+    process.exitCode = 1;
+  }
+}
+if (!process.exitCode) console.log('No browser filesystem picker calls in application sources.');

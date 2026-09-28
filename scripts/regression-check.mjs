@@ -51,7 +51,7 @@ const checks = [
   ["comfort wetness label is explicit", /Rain & dampness/.test(source) && /Snow & dampness/.test(source) && !/label: "Wet weather"/.test(source)],
   ["weather attribution never clutters the hero", !/className="data-credit"/.test(source)],
   ["feedback is clearly framed as post-outing", /How did the recommendation feel/.test(source) && /Rate it after your outing/.test(source)],
-  ["not-followed feedback receives a simple thank-you", /Thanks — your feedback was saved\./.test(source) && !/did not retrain the model/.test(source)],
+  ["not-followed feedback receives a simple thank-you", /Thanks — another outing rated\./.test(source) && !/did not retrain the model/.test(source)],
   ["planner uses concise feels-like wording", /<span>Feels like \{result\?\.rangeText/.test(source) && !/Official feels like/.test(source)],
   ["departure time is absolute, not a live offset", /const \[departAt/.test(source) && /laterDepartureOptions/.test(source) && !/startOffset/.test(source)],
   ["temperature display uses actual air temperature now", /departAt == null \? "Temperature" : "Forecast"/.test(source) && /plan\.depart\.actual/.test(source)],

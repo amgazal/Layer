@@ -1,5 +1,84 @@
 # Layer engineering pass — September 27, 2026
 
+## Focused UX polish — September 28, 2026
+
+This local pass follows the verified release below; it has not been committed or
+deployed. No database schema, SMTP, Auth settings, domain, dependencies, rain
+thresholds, outing algorithm or learning coefficients changed.
+
+- Display freshness now measures the last successful Layer check: `Updated now`,
+  `Updated N min ago`, or `Updating…`. Internal trust independently considers
+  retrieval older than 15 minutes and provider current data older than 30 minutes.
+  Two expected 15-minute source intervals tolerate ordinary cadence; the 24-hour
+  maximum and forecast-coverage requirements are unchanged.
+- One compact, opaque amber `Weather may be outdated` status with Refresh replaces
+  the duplicate stale paragraph/timestamp. Failed checks with recent usable data
+  say `Couldn’t update · Showing recent weather`; unusable data retain
+  `Weather unavailable` and Retry. One atomic status region announces freshness.
+- Feedback streak derives from completed normalized history entries, by local
+  calendar date. Today or yesterday anchors consecutive days; multiple ratings
+  count once per day; malformed/future dates are ignored. It appears in the
+  feedback section, confirmation and a small profile stat. Just-right and
+  not-followed submissions count without changing their no-training contract.
+  No separate persistence or animation was added. History remains capped at 80
+  entries, so streaks are limited by retained feedback (not lifetime statistics).
+- Removed the heuristic `% learned` wording in favor of `Learning from your
+  feedback`; the historical ratings display is called a comfort feedback trend.
+- Outside-region fixes say `Layer supports the Ithaca area. Showing Cornell campus
+  weather.` Denied/inaccurate fixes say `Location unavailable. Using Cornell campus
+  weather.` The same region/accuracy limits, coordinate privacy and temporary
+  corrections remain in place.
+- Browser testing caught and fixed immediate streak visibility when a new rating
+  timestamp was newer than the page clock. Extended feedback accessibility testing
+  found the existing follow-question label at 4.15:1 contrast; its text was darkened.
+  Initial new refresh tests needed to await the first request before gating the
+  next; existing checks were retained and the copy-specific assertion updated.
+
+### File-access audit
+
+No intentional filesystem picker, file input, directory enumeration, drag/drop
+filesystem access or native filesystem bridge was found in application sources.
+The callback uses same-origin BroadcastChannel/localStorage and PKCE exchange;
+installed-site metadata does not request filesystem access. The existing Open
+email action uses `mailto:` to invoke the user's mail handler, but that alone does
+not establish the cause of the reported macOS notification. The optional existing
+`window.storage` adapter does not itself request OS file permissions.
+
+No new OS permissions were introduced or recommended. Authentication handoff was
+preserved. The security check now flags direct browser file/directory picker calls
+in application code, excluding documentation and tests. This static guard is not
+an exhaustive analysis of arbitrary dynamic API aliases. The actual macOS warning
+cannot be reproduced or attributed without the affected installed-app/browser and
+OS context; no physical-device or macOS reproduction pass is claimed.
+
+### Fresh verification results
+
+| Command | Result |
+| --- | --- |
+| `npm ci` | PASS; 106 installed, 107 audited |
+| `npm audit` | PASS; 0 vulnerabilities |
+| `npm run verify` | PASS; 79 source checks, 105 unit tests / 6 files, build, credential and filesystem-picker scans |
+| `npm run test:browser` | PASS; 23 tests |
+| `npm run test:production` | PASS; 2 tests, root and `/Layer/` paths |
+| `npm run test:auth` | PASS; 1 real local account test |
+| `git diff --check` | PASS |
+
+The existing Layer local Supabase stack was resumed for the account test without
+resetting or migrating it. Database integration/smoke checks were not rerun in this
+UI-only pass; their earlier results below remain historical.
+
+Browser coverage includes provider ages 9/16/31 minutes, retrieval staleness,
+failed refresh, unavailable/retry, one freshness announcement, allowed/denied/
+inaccurate/outside location, coordinate storage, streak persistence, non-training
+feedback, keyboard navigation and reduced motion. Responsive checks cover
+320/375/430/768/1024/1440 px and 844×390 landscape. Stale first-viewport screenshots
+were reviewed at 320 and 430 px, along with the normal 375 px layout; no duplicated
+warning or horizontal overflow. Axe checks cover the stale and rated states.
+Physical Safari/iOS, Android and the reported macOS permission notification remain
+manual checks. No new hosted verification or deployment is claimed in this pass.
+
+---
+
 ## Final release verification — September 27–28, 2026
 
 **NOT VERIFIED:** hosted migration/schema/security inspection and real production email handoff require management access and a test account. Physical iOS/Android checks also remain pending. No hosted database or domain change was performed.

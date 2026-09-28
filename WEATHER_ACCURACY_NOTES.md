@@ -20,7 +20,7 @@ For a sustained difference of at least 6°F, longer cooling trips keep a departu
 
 ## Trust and refresh
 
-No sample weather is generated in production. Cache v8 accepts bounded real payloads and preserves timestamps. Beyond 15 minutes, show last-known conditions and an outdated-outfit notice; beyond 24 hours, unavailable. Provider valid time and retrieval time both constrain freshness.
+No sample weather is generated in production. Cache v8 accepts bounded real payloads and preserves timestamps. The display age uses the last successful check. Retrieval older than 15 minutes or provider current data older than 30 minutes shows one compact stale warning; two provider intervals allow ordinary 15-minute cadence. Beyond 24 hours, weather remains unavailable. Both clocks still constrain trust.
 
 Visible pages refresh every five minutes, two during active precipitation, and on return after 90 seconds. Manual refresh and local reports request immediately; overlapping triggers coalesce. Location-mode changes cancel obsolete work. The 10-second network timeout includes JSON parsing. Hidden pages do not poll. No rapid polling is scheduled simply to repeat the same model run.
 

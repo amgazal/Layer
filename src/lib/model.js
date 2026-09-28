@@ -138,3 +138,21 @@ export function seedModel(climate, tolerance) {
   for (const key of Object.keys(CENTERS)) model.regime[key] = {off:clamp(seeds[climate][key]+adjustments[tolerance],-CLAMP,CLAMP),n:.6};
   return model;
 }
+
+/** Local calendar-day feedback consistency, independent of comfort learning. */
+export function feedbackStreak(history, now = Date.now()) {
+  if (!Array.isArray(history) || !Number.isFinite(now)) return 0;
+  // UTC ordinals of local calendar dates avoid 23/25-hour DST-day arithmetic.
+  const day = at => {
+    const date = new Date(at);
+    return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86400000;
+  };
+  const today = day(now);
+  if (!Number.isFinite(today)) return 0;
+  const days = new Set(history.filter(h => Number.isFinite(h?.at) && h.at >= 0 && h.at <= now
+    && ['right', 'cold', 'warm'].includes(h.outcome)).map(h => day(h.at)).filter(Number.isFinite));
+  let cursor = days.has(today) ? today : today - 1;
+  let streak = 0;
+  while (days.has(cursor)) { streak++; cursor--; }
+  return streak;
+}

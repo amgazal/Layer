@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   CENTERS, KERNEL, STEP_MAX, PRIOR_N, CLAMP, FACTOR_CLAMP,
   clamp, deepCopy, EMPTY_MODEL, normalizeModel,
-  kernelWeights, pooledOffset, totalObservations, confidence, updateModel, seedModel,
+  kernelWeights, pooledOffset, totalObservations, confidence, updateModel, seedModel, feedbackStreak,
 } from "./model";
 
 const fresh = () => deepCopy(EMPTY_MODEL);
@@ -282,5 +282,31 @@ describe('climate and tolerance seeds',()=>{
   it('starts tropical users warmer in cold weather and ignores invalid setup',()=>{
     expect(seedModel('tropical','same').regime.cold.off).toBeLessThan(seedModel('cold','same').regime.cold.off);
     expect(seedModel('mars','same')).toBeNull();
+  });
+});
+
+describe('feedback streak', () => {
+  const now = new Date(2026, 8, 28, 12).getTime();
+  const entry = (days, hour = 10) => ({ at: new Date(2026, 8, 28 - days, hour).getTime(), outcome: 'right', followed: 'no' });
+  it.each([
+    [[], 0], [[0], 1], [[0,1], 2], [[0,1,2], 3], [[0,0], 1],
+    [[0,0,1,1,2,2], 3], [[1,2], 2], [[2,3], 0], [[0,2], 1], [[2,0,1], 3],
+  ])('counts calendar days %j as %i', (days, expected) => {
+    expect(feedbackStreak(days.map(d => entry(d)), now)).toBe(expected);
+  });
+  it('ignores malformed, incomplete and future entries', () => {
+    expect(feedbackStreak([null, {}, {at:'bad'}, {at:now}, {...entry(0),at:Infinity}, entry(-1), entry(0,13), entry(0)], now)).toBe(1);
+  });
+  it('uses calendar boundaries rather than elapsed 24-hour periods', () => {
+    const midnight = new Date(2026, 2, 9, 0, 1).getTime();
+    const history = [8,7,6].map(d => ({at:new Date(2026,2,d,23,59).getTime(),outcome:'cold'}));
+    expect(feedbackStreak(history, midnight)).toBe(3);
+  });
+  it('does not mutate history or bypass normalization bounds', () => {
+    const model = normalizeModel({...fresh(),history:Array.from({length:100},(_,i)=>entry(99-i))});
+    const before = JSON.stringify(model);
+    expect(model.history).toHaveLength(80);
+    expect(feedbackStreak(model.history,now)).toBe(80);
+    expect(JSON.stringify(model)).toBe(before);
   });
 });

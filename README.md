@@ -13,7 +13,7 @@ Positive precipitation takes priority over dry weather codes. A second, five-poi
 The header and scenic background describe current conditions, even when planning a later departure. Outfit protection and future warnings cover the selected outing.
 
 - Recent real cached weather can appear immediately while refreshing, with its original timestamp.
-- Weather older than 15 minutes is **Last known conditions**, with age and an outdated-recommendation notice. Age considers both retrieval and provider valid time.
+- **Updated now / Updated N min ago** describes Layer’s last successful check; **Updating…** appears during requests. A failed check with usable recent weather says **Couldn’t update · Showing recent weather**. One amber **Weather may be outdated** line replaces duplicate warnings when retrieval is over 15 minutes old or provider data is over 30 minutes old (two normal 15-minute intervals).
 - Weather older than 24 hours, invalid data, or an uncovered outing window produces **Weather unavailable** with Retry. There is no production sample-weather fallback. The old cache namespace is deliberately ignored because it could contain synthetic data.
 - Visible pages refresh every five minutes, or two during precipitation. Focus/pageshow refresh after 90 seconds of age. Requests coalesce, obsolete requests abort, and timeouts include response decoding. Frequent polling cannot improve an unchanged model run.
 
@@ -21,7 +21,7 @@ The header and scenic background describe current conditions, even when planning
 
 Campus is the default. **Use my location** explicitly enables a session-only option using one-shot browser geolocation at each weather lookup, never a location watcher. Fixes must be within approximately 8 km of Cornell and report accuracy within 500 m. Otherwise Layer uses campus weather. A valid fix centers the weather request and four nearby probes; there are still only two weather API requests per refresh.
 
-Coordinates exist only while performing that lookup and are sent to Open-Meteo as necessary to obtain weather. They are not saved to local storage, Supabase, feedback events, or analytics. Precise-location forecast responses remain in memory and reset on reload. The browser/OS and weather provider have their own permission and request handling.
+Outside Ithaca, Layer explicitly shows Cornell campus weather; denied or inaccurate location fixes also fall back to campus. Coordinates exist only while performing that lookup and are sent to Open-Meteo as necessary to obtain weather. They are not saved to local storage, Supabase, feedback events, or analytics. Precise-location forecast responses remain in memory and reset on reload. The browser/OS and weather provider have their own permission and request handling.
 
 **Conditions look wrong?** offers rain, snow, or dry reports. Reports refresh weather, override current presentation/protection for 15 minutes, and never train the comfort model. Feedback in a session with a report is saved without learning or uploading a research event until the report is cleared. No crowdsourcing or third-party analytics is added.
 
@@ -35,7 +35,7 @@ The [comfort model](src/lib/model.js) blends cold/mild/warm regimes with partial
 
 ## Local storage and optional accounts
 
-No account is required. Setup, calibration and recent ratings stay on the device. Weather still needs a connection; there is no offline service worker.
+No account is required. Setup, calibration and recent ratings stay on the device. A small feedback streak counts consecutive local calendar days with completed ratings, including ratings that do not retrain the model; it is derived from the bounded history, not an accuracy score. Weather still needs a connection; there is no offline service worker.
 
 Optional Supabase sync queues consented feedback with unique IDs, retries failed delivery, and mirrors model snapshots. Queued events are tied to the account that created them and are not reassigned after sign-in. Legacy unowned queued events are withheld. Anonymous accounts cannot recover a lost browser session; link email or a configured OAuth identity for recovery. Signing into an existing account adopts its model; independently trained histories are not merged. Sign-out keeps local calibration and turns cloud sync off.
 

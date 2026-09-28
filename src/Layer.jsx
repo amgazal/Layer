@@ -1,5 +1,5 @@
 import { buildOuting, outingTemperature } from "./lib/outing";
-import { CACHE_KEY, CAMPUS_POINTS, fetchWeather, readWeatherCache, weatherTrust, locateOnce, activeCorrection, correctCurrent, timeMs } from "./lib/weather-client";
+import { CACHE_KEY, CAMPUS_POINTS, fetchWeather, readWeatherCache, weatherTrust, weatherFreshness, locateOnce, activeCorrection, correctCurrent } from "./lib/weather-client";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import {
   CLAMP, clamp, deepCopy, EMPTY_MODEL, normalizeModel,
-  totalObservations, updateModel, seedModel,
+  totalObservations, updateModel, seedModel, feedbackStreak,
 } from "./lib/model";
 import {
   classifyWeather,
@@ -1232,20 +1232,23 @@ export default function Layer() {
           setWx(cached.data); setWeatherUpdatedAt(cached.at); setWxState('cached');
         }
       }
-      const points = preciseMode ? await locateOnce() : null;
+      const location = preciseMode ? await locateOnce() : null;
+      const points = location?.points;
       if (ctrl.signal.aborted) return;
-      if (preciseMode && !points) setLocationNotice('Precise location unavailable or outside Ithaca. Using Campus.');
+      if (preciseMode) setLocationNotice(location.issue === 'outside'
+        ? 'Layer supports the Ithaca area. Showing Cornell campus weather.'
+        : location.issue ? 'Location unavailable. Using Cornell campus weather.' : null);
       timer = setTimeout(() => ctrl.abort(), 10000);
       const payload = await fetchWeather({ points: points ?? CAMPUS_POINTS, signal: ctrl.signal, precise: !!points });
       if (!mounted.current || ctrl.signal.aborted) return;
       const at = Date.now();
       weatherSnapshot.current = { at, data: payload };
-      setWx(payload); setWeatherUpdatedAt(at); setWxState('live');
+      setWx(payload); setWeatherUpdatedAt(at); setNow(new Date(at)); setWxState('live');
       // Precise lookups remain session-only, including their returned forecast.
       if (!points) await storageSet(CACHE_KEY, JSON.stringify({ at, data: payload }));
     } catch {
       if (!mounted.current || weatherRequest.current !== ctrl) return;
-      setWxState(weatherSnapshot.current ? 'cached' : 'unavailable');
+      setWxState(weatherSnapshot.current ? 'failed' : 'unavailable');
     } finally {
       clearTimeout(timer);
       if (weatherRequest.current === ctrl) weatherRequest.current = null;
@@ -1552,9 +1555,11 @@ export default function Layer() {
 
   const applyFeedback = useCallback((direction, blameKey) => {
     if (!plan || !result) return;
+    const feedbackAt = Date.now();
+    setNow(new Date(feedbackAt));
     const withHistory = deepCopy(model);
     withHistory.history = [...withHistory.history, {
-      at: Date.now(),
+      at: feedbackAt,
       apparent: plan.depart.apparent,
       effective: result.effective,
       activity,
@@ -1596,17 +1601,11 @@ export default function Layer() {
     });
 
     setAskBlame(null);
-    setToast(
-      correction || trust !== "recent" ? "Saved without adjusting your comfort profile because weather was uncertain." : followed === "no"
-        ? "Thanks — your feedback was saved."
-        : direction === 0
-          ? "Locked in — I’ll keep reading days like this similarly."
-          : blameKey && blameKey !== "cold"
-            ? `Noted — I’ll weight ${blameKey === "wet" ? "rain" : blameKey} more for you.`
-            : direction < 0
-              ? "Got it — I’ll call the next one warmer."
-              : "Got it — I’ll lighten the next call."
-    );
+    const streak = feedbackStreak(next.history);
+    setToast(`${streak === 7 ? '7 days of feedback. Nice consistency.' : streak > 1
+      ? `Nice — ${streak}-day feedback streak.` : 'Thanks — another outing rated.'}${correction || trust !== 'recent'
+      ? ' Saved without adjusting your comfort profile because weather was uncertain.' : ''}`);
+
   }, [plan, result, model, activity, followed, commit, departAt, duration, cycling, wx, now, correction, trust]);
 
   const onFeedback = (kind) => {
@@ -1654,7 +1653,7 @@ export default function Layer() {
     return <div className="lyr weather-cloudy loading-screen"><style>{css}</style>
       <main className="card glass unavailable" role="status"><h1>Weather unavailable</h1>
       <p>We couldn’t get trustworthy weather for this outing. Check your connection and try again.</p>
-      <button className="profile-primary" onClick={handleManualRefresh} disabled={weatherRefreshing}>{weatherRefreshing ? 'Refreshing…' : 'Retry'}</button>
+      <button className="profile-primary" onClick={handleManualRefresh} disabled={weatherRefreshing}>{weatherRefreshing ? 'Updating…' : 'Retry'}</button>
       {departAt != null && <button className="profile-secondary" onClick={() => setDepartAt(null)}>Return to now</button>}
       </main></div>;
   }
@@ -1676,11 +1675,10 @@ export default function Layer() {
   const timeText = formatTime(now);
   const accent = result.band.accent;
   const ratingCount = model.history.length;
-  const learningProgress = Math.min(95, Math.round((ratingCount / (ratingCount + 4)) * 100));
-  const learningLabel = ratingCount === 0 ? "Starting profile" : `${learningProgress}% learned`;
+  const learningLabel = ratingCount === 0 ? "Starting profile" : "Learning from your feedback";
+  const streak = feedbackStreak(model.history, now.getTime());
   const planningSummary = `${departAt == null ? "Leaving now" : `Leaving ${formatTime(outingStart)}`} • ${DURATIONS.find((d) => d.minutes === duration)?.label || `${duration} min`} outside${cycling ? " • Cycling" : ""}`;
-  const weatherAgeMinutes = weatherUpdatedAt == null ? null : Math.max(0, Math.floor((now.getTime() - Math.min(weatherUpdatedAt, timeMs(wx.current.time))) / 60000));
-  const weatherAgeText = `${trust === 'stale' ? 'Last known conditions · ' : ''}${weatherRefreshing ? 'Refreshing · ' : ''}${weatherAgeMinutes < 1 ? 'Updated now' : `Updated ${weatherAgeMinutes} min ago`}`;
+  const weatherAgeText = weatherFreshness(weatherUpdatedAt, now.getTime(), trust, weatherRefreshing, wxState === 'failed');
   const ConditionIcon = liveCond.Icon;
   const conditionText = correctionActive ? `${correctionActive.kind === 'rain' ? 'Raining here' : correctionActive.kind === 'snow' ? 'Snowing here' : 'Dry here'} · your report`
     : ['nearby','campus'].includes(wx?.current?.rainScope) && liveCond.wet ? 'Passing shower around campus' : liveCond.label;
@@ -1787,8 +1785,7 @@ export default function Layer() {
                 </span>
               )}
             </div>
-            {trust === 'stale' && <p className="trust-note" role="status">Last known conditions. This outfit uses weather that may be outdated.</p>}
-            <div className="hero-foot"><span>{planningSummary}</span>{weatherAgeText && <span className="weather-age" role="status" aria-live="polite">{weatherAgeText}</span>}</div>
+            <div className="hero-foot"><span>{planningSummary}</span>{weatherAgeText && <span className={`weather-freshness${trust === 'stale' ? " is-stale" : ""}`}><span className="weather-age" role="status" aria-atomic="true">{weatherAgeText}</span>{!weatherRefreshing && (trust === 'stale' || wxState === 'failed') && <button className="weather-link" onClick={handleManualRefresh}>Refresh</button>}</span>}</div>
             <div className="weather-controls">
               <button className="weather-link" onClick={() => { setLocationNotice(null); setPreciseMode(v => !v); }}>{preciseMode ? 'Use campus location' : 'Use my location'}</button>
               <button className="weather-link" aria-expanded={correctionOpen} onClick={() => setCorrectionOpen(v => !v)}>Conditions look wrong?</button>
@@ -1945,6 +1942,7 @@ export default function Layer() {
           </section>
 
           <section className="card glass main-card feedback-card">
+            {streak > 0 && <p className="feedback-streak"><Flame size={15} aria-hidden="true" />{streak}-day feedback streak</p>}
             <h2 className="card-h">How did the recommendation feel?</h2>
             {ratingCount === 0 && !readyToRate ? (
               <div className="first-rate">
@@ -2030,7 +2028,7 @@ export default function Layer() {
                 <div className="spark">{metric.spark.map((h, i) => <span key={i} className={`sp ${h.outcome}`} />)}</div>
               </div>
             ) : (
-              <p className="empty">Rate a few outings and Layer will begin showing your accuracy trend.</p>
+              <p className="empty">Rate a few outings and Layer will begin showing your comfort feedback trend.</p>
             )}
 
             <button className="link-btn learn" aria-expanded={showModel} aria-controls="learning-details-panel" onClick={() => setShowModel((v) => !v)}>
@@ -2095,7 +2093,7 @@ export default function Layer() {
 
             <div className="profile-stat-grid">
               <div className="profile-stat"><strong>{ratingCount}</strong><span>rating{ratingCount === 1 ? "" : "s"}</span></div>
-              <div className="profile-stat"><strong>{ratingCount === 0 ? "New" : `${learningProgress}%`}</strong><span>profile progress</span></div>
+              <div className="profile-stat"><strong>{streak}</strong><span>day feedback streak</span></div>
             </div>
 
             <AccountSection
@@ -2385,7 +2383,11 @@ const css = `
   padding: 12px 16px; border-radius: 16px; background: rgba(240, 176, 54, .28); border: 1px solid rgba(255, 213, 124, .22);
 }
 .hero-foot { margin-top: 18px; font-size: 15px; color: rgba(255,255,255,.88); display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
-.weather-age { font-size: 12px; color: rgba(255,255,255,.7); font-family:'DM Mono',monospace; }
+.weather-age { font-size:12px; color:#fff; }
+.weather-freshness { display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px; max-width:100%; padding:2px 8px; border-radius:10px; background:#172538; }
+.weather-freshness.is-stale { background:#44321c; }
+.weather-freshness.is-stale .weather-age, .weather-freshness .weather-link { color:#ffdda0; }
+.feedback-streak { display:flex; align-items:center; gap:6px; color:#785017; font-size:12px; margin:0 0 10px; }
 .glass {
   background: rgba(255,255,255,.86); color: var(--ink); border: 1px solid rgba(255,255,255,.34);
   box-shadow: 0 24px 60px rgba(8,18,32,.16); backdrop-filter: blur(20px);
@@ -2541,7 +2543,7 @@ const css = `
 .lv-3 .seg.fill { background: #E0703C; }
 .feedback-copy { margin:6px 0 16px; }
 .follow-line { display:flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
-.follow-q { color:#5A6A82; font-size: 15px; }
+.follow-q { color:#43536b; font-size: 15px; }
 .fb-row { display:flex; gap: 10px; }
 .fb {
   flex:1; border:none; border-radius: 18px; padding: 16px 10px; cursor:pointer; background:#F2F4F9;
