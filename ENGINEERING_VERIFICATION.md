@@ -1,6 +1,6 @@
 # Layer engineering pass — September 27, 2026
 
-## Final release verification — September 27, 2026
+## Final release verification — September 27–28, 2026
 
 **NOT VERIFIED:** hosted migration/schema/security inspection and real production email handoff require management access and a test account. Physical iOS/Android checks also remain pending. No hosted database or domain change was performed.
 
@@ -8,8 +8,19 @@ At the start of this release pass, local and remote `main` were both
 `1c46ade9f83abfa0b686c7c0d60759dc6f3a8730`, but 22 tracked files were modified and
 three files (including this report) were untracked. That pushed commit's README
 still contained obsolete fixed-location/sample-weather wording. All existing
-engineering changes were preserved. The release source SHA and final CI/deployed
-results will be recorded after the source commit is created.
+engineering changes were preserved.
+
+**Exact tested release source commit:**
+`5e6e094c3936dbaabde6cab0c7f2914fb623baf8`, committed and pushed to `main`.
+The full local suite above/below ran against this source tree before committing;
+no application, dependency, migration or test code changed afterward. The final
+report update is a documentation-only follow-up commit; its own SHA is available
+in Git history and the final handoff (a document cannot contain its own commit
+hash). This report and the hosted checklist are now tracked.
+
+Both workflows passed for the exact release source SHA:
+[Verify Layer, run 36359667374](https://github.com/amgazal/Layer/actions/runs/36359667374)
+and [Pages deployment, run 36359660542](https://github.com/amgazal/Layer/actions/runs/36359660542).
 
 ### Fresh command results (this pass)
 
@@ -25,6 +36,11 @@ results will be recorded after the source commit is created.
 | `npm run test:integration` | PASS | 29, real local Supabase |
 | `npm run smoke:local` | PASS | 15 |
 | `git diff --check` | PASS | no whitespace errors |
+| `node /tmp/layer-live-release-check.mjs` | PASS | 18 deployed-browser assertions using real Open-Meteo responses |
+
+The temporary live-check harness and logs reside under `/tmp`; this is an ad hoc
+release check, not a new repository test script. It observed deployed bundle
+`assets/index-7dRW1Lxx.js` and ten HTTP 200 weather responses.
 
 Local SQL inspection confirms all five migration versions are installed:
 20260727, 20260728, 20260729, 20260802, 20260927. This pass resumed the existing
@@ -57,9 +73,21 @@ isolated test database; it did not rerun the prior pass's `db reset` command.
   Retry received real 200 main/probe responses and displayed a recommendation.
   The initial failure was transient; no provider or recommendation change was
   made to hide it.
-- Initial deployed checks passed root load, hard reload, manifest, favicon,
-  requested photos/video and direct callback return to `/Layer/`. No page
-  exceptions were observed. Final source deployment will be checked separately.
+- Final deployed checks passed all 18 assertions: real recommendation load;
+  manual refresh increases the cached retrieval timestamp; duration changes
+  outing presentation while retaining the current-condition header; granted
+  emulated location fetches a real precise forecast; denial simulation falls
+  back to campus; test coordinates stay out of local/session storage and the
+  app address and are sent only to Open-Meteo; hard reload succeeds; stale and
+  expired states work with real cached weather and locally simulated network
+  failure; Retry recovers with real responses; all 14 named assets return 200;
+  no app asset errors, page exceptions, mixed-content or development requests;
+  direct callback access returns to `/Layer/?layer_auth_return=1`.
+  The displayed age remained “Updated now” across a quick refresh, correctly
+  reflecting the same current provider interval rather than promising newer
+  modeled data. Live forecast conditions need not produce a different outfit
+  for every duration; deterministic duration/future-rain tests cover that logic.
+  Browser permission simulation does not verify a physical OS permission prompt.
 
 ### Documentation and privacy review
 
