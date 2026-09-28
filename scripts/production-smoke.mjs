@@ -39,10 +39,12 @@ try {
   pass('manual weather refresh');
   await page.getByRole('button',{name:'Use my location',exact:true}).click();
   await visible(page.getByText('Location unavailable. Using Cornell campus weather.',{exact:true}));pass('denied location fallback');
+  await page.getByRole('button',{name:'Use campus location',exact:true}).click();
   await context.grantPermissions(['geolocation']);
   await context.setGeolocation({latitude:42.454321,longitude:-76.475678,accuracy:30});
   await page.getByRole('button',{name:'Use my location',exact:true}).click();
-  await visible(page.getByText('Near you on campus',{exact:true}));
+  // The campus subtitle is deliberately hidden in the narrow mobile header.
+  await page.waitForFunction(()=>document.querySelector('.campus-line small')?.textContent==='Near you on campus');
   assert.ok(!(await page.evaluate(()=>JSON.stringify(localStorage)+JSON.stringify(sessionStorage)+location.href)).includes('42.454321'));
   pass('allowed location and coordinate persistence check');
   await page.getByRole('button',{name:'Use campus location',exact:true}).click();

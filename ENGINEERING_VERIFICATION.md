@@ -394,3 +394,47 @@ then the saved personalized main experience with no setup questions. Repeat with
 the original tab closed to check the email-app/new-tab fallback. A production test
 account/email interaction was not supplied. Physical iOS/Android email-app behavior
 and hosted schema/dashboard inspection are not claimed by local automation.
+
+### Deployed custom-domain results
+
+Release source `62a2abcace3797073e8a4cb081d7befd8612d461` was committed and pushed to
+`main`. [Pages run 36463361392](https://github.com/amgazal/Layer/actions/runs/36463361392)
+passed, including all 44 browser tests and both production asset checks. GitHub
+Pages deployment `6717149149` records that exact SHA. The served production bundle
+`assets/index-CImgggPc.js` contains the restoration/callback fixes and passed the
+public-only credential scan. The documentation/smoke-harness follow-up changes no
+application source or build inputs.
+
+`node scripts/production-smoke.mjs`: **PASS, 16 checks**, on
+`https://layer.amgazal.com` after deployment:
+
+- HTTPS certificate validation and root load;
+- returning-user email UI without sending mail;
+- real Open-Meteo requests and recommendation (14 HTTP 200 weather responses);
+- manual refresh; denied and allowed emulated location; coordinate nonpersistence;
+- expanded planner, local feedback/streak, profile modal, 393 px layout;
+- hard reload, every public static asset returning 200, canonical metadata;
+- deployed-fix markers, public-only credential scan, direct root callback;
+- no page exceptions or application asset failures.
+
+The live 393 px screenshot was reviewed. Two initial smoke attempts stopped on
+harness assumptions: denied location retains the “Use campus location” toggle,
+and the campus subtitle is intentionally hidden in the narrow header. Correcting
+those assertions/steps made the smoke pass; no app changes were needed.
+
+**Hosting finding / unresolved:** the existing legacy URL
+`https://amgazal.github.io/Layer/auth-callback.html` returns HTTP 301 to
+`http://layer.amgazal.com/auth-callback.html`, which serves HTTP 200. GitHub's Pages
+API reports `cname: layer.amgazal.com`, `https_enforced: false`. Primary HTTPS works,
+but legacy callback transport cannot be reported as secure/fully verified. Approval
+was requested to enable only Pages Enforce HTTPS; no hosting setting was changed.
+Old-origin PKCE/session storage also does not transfer between domains: old links
+may require a fresh sign-in link requested on the primary domain. Repository
+root/subpath compatibility and the documented legacy allowlist were preserved.
+
+GitHub emitted existing nonblocking action-runtime/input deprecation warnings;
+the workflow completed successfully. Dependencies/actions were not upgraded.
+
+**NOT VERIFIED — legacy callback redirects to HTTP; production returning-account
+email acceptance still requires an authorized manual sign-in.** All automated
+local tests and the primary HTTPS-domain smoke passed. No “bug-free” claim is made.
