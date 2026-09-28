@@ -3,9 +3,10 @@
 ## Before sharing
 
 1. Push this project and wait for the GitHub Actions deployment to turn green.
-2. In Supabase → Authentication → URL Configuration, set:
-   - Site URL: `https://amgazal.github.io/Layer/`
-   - Redirect URL: `https://amgazal.github.io/Layer/auth-callback.html`
+2. Verify the existing Supabase Authentication URL configuration (already configured):
+   - Site URL: `https://layer.amgazal.com/`
+   - Redirect URL: `https://layer.amgazal.com/auth-callback.html`
+   - Keep legacy callback compatibility: `https://amgazal.github.io/Layer/auth-callback.html`
 3. Open Layer in a private tab and request an email link. Confirm the dedicated **Check your email** screen appears.
 4. Keep the original Layer tab open, then open the email link on the same device/browser.
 5. Confirm the original Layer tab receives the sign-in when the browser allows it, and that a visible success message appears. If the browser opens a separate context, confirm the new-tab fallback still signs in successfully.

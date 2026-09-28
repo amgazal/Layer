@@ -12,10 +12,11 @@ for(const file of files){
   for(const token of text.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g)??[]) {
     try {if(JSON.parse(Buffer.from(token.split('.')[1],'base64url')).role==='service_role')bad=true;}catch{}
   }
+  if (/\bre_[A-Za-z0-9_-]{24,}\b/.test(text)) bad=true;
   if(bad){console.error(`Private credential pattern found in ${file}`);failures++;}
 }
 if(failures)process.exit(1);
-console.log(`No private-key, Supabase secret-key, or service-role JWT patterns in ${files.length} tracked/build files.`);
+console.log(`No private-key, Supabase secret-key, Resend key, or service-role JWT patterns in ${files.length} tracked/build files.`);
 
 // Scan shipped application sources, not documentation or test fixtures.
 const appFiles = [...walk('src'), ...walk('public'), 'index.html'].filter(file =>

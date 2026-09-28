@@ -14,6 +14,7 @@
       h1{margin:18px 0 8px;font-size:28px}p{margin:0;color:rgba(255,255,255,.76);line-height:1.55}.done{display:none}.check{width:46px;height:46px;margin:auto;border-radius:50%;display:grid;place-items:center;background:#2d8c61;font-weight:900;font-size:25px}
       button{margin-top:20px;width:100%;min-height:50px;border:0;border-radius:14px;background:#f2bd4c;color:#112033;font-weight:800;font-size:15px;cursor:pointer}
       .subtle{margin-top:12px;font-size:12px;color:rgba(255,255,255,.58)}
+      @media(prefers-reduced-motion:reduce){.spinner{animation:none}}
       @keyframes spin{to{transform:rotate(360deg)}}
     </style>
   </head>
@@ -27,7 +28,7 @@
       <section id="done" class="done">
         <div class="check" aria-hidden="true">✓</div>
         <h1>You're signed in</h1>
-        <p>Your Layer profile is ready. Returning you to the app…</p>
+        <p>Returning to Layer to load your saved profile…</p>
         <button type="button" id="return">Return to Layer</button>
         <p class="subtle">If your original Layer tab is still open, it has been updated too.</p>
       </section>
@@ -89,22 +90,27 @@
           returnTimer = setTimeout(returnToLayer, 1100);
         };
 
+        const receiveResult = (event) => {
+          const data = event.data || {};
+          if (data.nonce !== nonce || completed) return;
+          if (data.type === "layer-auth-ack") acknowledged = true;
+          if (data.type === "layer-auth-complete") {
+            completed = true;
+            try { localStorage.removeItem(STORAGE_KEY); } catch {}
+            showDone();
+          }
+          if (data.type === "layer-auth-error") {
+            try { localStorage.removeItem(STORAGE_KEY); } catch {}
+            setTimeout(continueHere, 250);
+          }
+        };
+        window.addEventListener("storage", event => {
+          if (event.key !== "layer:auth-result-v2" || !event.newValue) return;
+          try { receiveResult({ data: JSON.parse(event.newValue) }); } catch {}
+        });
         try {
           channel = new BroadcastChannel(CHANNEL);
-          channel.onmessage = (event) => {
-            const data = event.data || {};
-            if (data.nonce !== nonce) return;
-            if (data.type === "layer-auth-ack") acknowledged = true;
-            if (data.type === "layer-auth-complete") {
-              completed = true;
-              try { localStorage.removeItem(STORAGE_KEY); } catch {}
-              showDone();
-            }
-            if (data.type === "layer-auth-error") {
-              try { localStorage.removeItem(STORAGE_KEY); } catch {}
-              setTimeout(continueHere, 250);
-            }
-          };
+          channel.onmessage = receiveResult;
           channel.postMessage(payload);
         } catch {}
 

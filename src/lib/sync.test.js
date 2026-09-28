@@ -69,3 +69,26 @@ it('queued events are not uploaded under a different account',async()=>{
   await sync.flushOutbox();
   expect(state.upsert).not.toHaveBeenCalled();
 });
+it('rapid re-sign-in has a new restore revision even within one millisecond',()=>{
+  const user={id:'a',is_anonymous:false};
+  state.onAuth('SIGNED_IN',{user});const first=sync.currentAuth().signedInAt;
+  state.onAuth('SIGNED_OUT',null);state.onAuth('SIGNED_IN',{user});
+  expect(sync.currentAuth().signedInAt).toBeGreaterThan(first);
+  const second=sync.currentAuth().signedInAt;
+  state.onAuth('INITIAL_SESSION',{user});state.onAuth('SIGNED_IN',{user});
+  expect(sync.currentAuth().signedInAt).toBe(second);
+});
+it('external sign-out cancels queued model uploads',async()=>{
+  sync.pushModel({seeded:true},1);
+  state.onAuth('SIGNED_OUT',null);
+  await vi.runOnlyPendingTimersAsync();
+  expect(state.upsert).not.toHaveBeenCalled();
+});
+it('failed setup reads and pending resets cannot be classified as empty',async()=>{
+  state.maybeSingle.mockResolvedValueOnce({error:new Error('offline')});
+  await expect(sync.pullProfile()).rejects.toThrow('offline');
+  expect(await sync.pullProfile()).toBeNull();
+  window.localStorage.setItem('layer:reset-pending','1');
+  await expect(sync.pullProfile()).rejects.toThrow('reset');
+  await expect(sync.pullModel()).rejects.toThrow('reset');
+});

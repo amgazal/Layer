@@ -482,6 +482,7 @@ let authInfo = cloudEnabled
   ? { status: "checking", email: null, provider: null, userId: null, signedInAt: 0 }
   : { status: "none", email: null, provider: null, userId: null, signedInAt: 0 };
 const authListeners = new Set();
+let signInSequence = 0;
 
 export function currentAuth() { return authInfo; }
 export function subscribeAuth(fn) {
@@ -498,6 +499,7 @@ if (cloudEnabled) {
   supabase.auth.onAuthStateChange((event, session) => {
     const user = session?.user;
     if (!user) {
+      syncGeneration += 1; pendingModel = null; clearTimeout(pushTimer);
       authPromise = null;
       setAuth({ status: "none", email: null, provider: null, userId: null, signedInAt: 0 });
       return;
@@ -521,7 +523,7 @@ if (cloudEnabled) {
     }
     authPromise = null;
     const shouldRestore = permanent && (
-      event === "INITIAL_SESSION" || accountChanged || authInfo.status !== "permanent"
+      accountChanged || authInfo.status !== "permanent"
     );
 
     setAuth({
@@ -529,10 +531,9 @@ if (cloudEnabled) {
       email: user.email ?? null,
       provider: permanent ? provider : null,
       userId: user.id ?? null,
-      // A permanent session means "bring my profile here". INITIAL_SESSION is
-      // included so a returning user who refreshes on a new device restores
-      // before onboarding is shown, rather than briefly flashing setup first.
-      signedInAt: shouldRestore ? Date.now() : authInfo.signedInAt,
+      // A monotonic session revision, stable across duplicate/focus events.
+      // Wall-clock milliseconds can collide on rapid sign-out/sign-in.
+      signedInAt: shouldRestore ? ++signInSequence : authInfo.signedInAt,
     });
 
     if (permanent) {

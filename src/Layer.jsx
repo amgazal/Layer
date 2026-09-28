@@ -724,7 +724,7 @@ function Onboarding({
               </div>
             </div>
 
-            {cloudAvailable && (
+            {cloudAvailable && auth?.status !== "permanent" && (
               <label className={`ob-backup ${allowCloud ? "on" : ""}`}>
                 <Cloud size={20} strokeWidth={2.1} aria-hidden="true" />
                 <span>
@@ -754,7 +754,9 @@ function Onboarding({
             </button>
 
             <p className="ob-note">
-              {cloudAvailable && allowCloud
+              {auth?.status === "permanent"
+                ? "Your setup will be saved to your signed-in account."
+                : cloudAvailable && allowCloud
                 ? "Anonymous sync is on. Add an account later for cross-device recovery."
                 : "Your profile stays on this device unless you choose sync later."}
             </p>
@@ -796,8 +798,8 @@ export default function Layer() {
   const [askBlame, setAskBlame] = useState(null);
   const [toast, setToast] = useState(null);
   const [accountNotice, setAccountNotice] = useState(null);
-  const [accountRestoreBusy, setAccountRestoreBusy] = useState(false);
-  const [accountRestoreError, setAccountRestoreError] = useState(false);
+  const [authExchangeBusy, setAuthExchangeBusy] = useState(false);
+  const [accountRestore, setAccountRestore] = useState({ key: null, status: "idle" });
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   // A brand-new tester has not been outside yet, so the rating controls stay
   // behind one deliberate tap. This prevents accidental day-one feedback from
@@ -848,6 +850,9 @@ export default function Layer() {
   const [auth, setAuth] = useState(() => currentAuth());
   useEffect(() => subscribeAuth((a) => { if (mounted.current) setAuth(a); }), []);
 
+  const handoffCode = useRef(null);
+  const handoffBusy = useRef(false);
+
   // Finish email authentication inside the already-open Layer tab. The email
   // callback sends the one-time PKCE code over same-origin BroadcastChannel /
   // storage. Exchanging the code here keeps this tab in place instead of
@@ -857,31 +862,42 @@ export default function Layer() {
     const channelName = "layer-auth-handoff-v2";
     const storageKey = "layer:auth-code-handoff-v2";
     let channel = null;
-    let exchanging = false;
+    const reply = (type, nonce) => {
+      const data = { type, nonce, at: Date.now() };
+      try {
+        const sender = new BroadcastChannel(channelName);
+        sender.postMessage(data);
+        sender.close();
+      } catch {}
+      try { localStorage.setItem("layer:auth-result-v2", JSON.stringify(data)); } catch {}
+    };
 
     const acceptCode = async (data) => {
-      if (exchanging || data?.type !== "layer-auth-code" || !data?.code) return;
+      if (handoffBusy.current || data?.type !== "layer-auth-code" || typeof data.code !== "string" || !data.code || handoffCode.current === data.code) return;
       if (data?.at && Date.now() - Number(data.at) > 2 * 60 * 1000) return;
-      exchanging = true;
-      setAccountRestoreBusy(true);
-      try { channel?.postMessage({ type: "layer-auth-ack", nonce: data.nonce }); } catch {}
+      handoffCode.current = data.code;
+      handoffBusy.current = true;
+      setAuthExchangeBusy(true);
+      reply("layer-auth-ack", data.nonce);
 
       const result = await exchangeAuthCode(data.code);
+      handoffBusy.current = false;
       if (result.ok) {
-        try { channel?.postMessage({ type: "layer-auth-complete", nonce: data.nonce }); } catch {}
+        reply("layer-auth-complete", data.nonce);
         try { localStorage.removeItem(storageKey); } catch {}
+        if (mounted.current) setAuthExchangeBusy(false);
         // SIGNED_IN now drives the normal permanent-account restoration effect.
         // Keep the loading state up until that effect finishes so onboarding
         // never flashes between authentication and model restoration.
         return;
       }
 
-      exchanging = false;
+      handoffCode.current = null;
       if (mounted.current) {
-        setAccountRestoreBusy(false);
+        setAuthExchangeBusy(false);
         setAccountNotice(result.error || "Layer could not finish the sign-in. Request a new email link and try again.");
       }
-      try { channel?.postMessage({ type: "layer-auth-error", nonce: data.nonce }); } catch {}
+      reply("layer-auth-error", data.nonce);
     };
 
     try {
@@ -918,8 +934,8 @@ export default function Layer() {
     if (!pending) return;
 
     setAccountNotice(auth.email
-      ? `Signed in as ${auth.email}. Your Layer profile is synced.`
-      : "Signed in successfully. Your Layer profile is synced.");
+      ? `Signed in as ${auth.email}.`
+      : "Signed in successfully.");
 
     if (nonce) {
       try {
@@ -993,15 +1009,20 @@ export default function Layer() {
   }, [persist]);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       // 1) Local is the source of truth for first paint — never blocks on network.
       const saved = await storageGet(MODEL_KEY);
+      if (cancelled) return;
       let localModel = null;
       if (saved?.value) {
         try { localModel = normalizeModel(JSON.parse(saved.value)); setModel(localModel); }
         catch {}
       }
       if (mounted.current) setReady(true);
+
+      // Permanent accounts have a single reconciliation owner below.
+      if (currentAuth().status === "permanent") return;
 
       // 2) Finish any previously interrupted reset before cloud reconciliation.
       // This prevents an older cloud model from restoring data the user cleared.
@@ -1016,7 +1037,7 @@ export default function Layer() {
       try {
         const revision = modelRevision.current;
         const cloud = await pullModel();
-        if (!mounted.current || modelRevision.current !== revision || hasPendingReset() || currentAuth().status === "permanent") return;
+        if (cancelled || !mounted.current || modelRevision.current !== revision || hasPendingReset() || currentAuth().status === "permanent") return;
         if (cloud?.model) {
           const cloudModel = normalizeModel(cloud.model);
           const localObs = localModel ? totalObservations(localModel) : -1;
@@ -1035,6 +1056,7 @@ export default function Layer() {
         }
       } catch { /* offline: local model stands */ }
     })();
+    return () => { cancelled = true; };
   }, []);
 
 
@@ -1045,86 +1067,75 @@ export default function Layer() {
    * phone that had already collected a couple of local ratings would keep them
    * and silently ignore the account it just signed into.
    */
-  const adoptedSignIn = useRef(0);
+  // A new identity/attempt is pending during render, before effects can run.
+  // Never use a ref recording "started" as evidence that restoration completed.
+  const restoreKey = auth.status === "permanent"
+    ? `${auth.userId}:${auth.signedInAt}:${restoreAttempt}` : null;
+  const restoreStatus = restoreKey
+    ? (accountRestore.key === restoreKey ? accountRestore.status : "pending") : "idle";
   useEffect(() => {
-    if (!auth.signedInAt || auth.signedInAt === adoptedSignIn.current) return;
-    adoptedSignIn.current = auth.signedInAt;
-    const hadLocalProfile = Boolean(model.seeded);
-    setAccountRestoreError(false);
+    if (!ready || !restoreKey) return;
     let cancelled = false;
-    setAccountRestoreBusy(true);
+    const current = () => !cancelled && mounted.current
+      && currentAuth().status === "permanent" && currentAuth().userId === auth.userId
+      && currentAuth().signedInAt === auth.signedInAt;
+    const finish = status => { if (current()) setAccountRestore({ key: restoreKey, status }); };
+    const localModel = model;
+    setAccountRestore({ key: restoreKey, status: "pending" });
     (async () => {
       try {
         if (hasPendingReset()) {
           await resetPersonalizationCloud(deepCopy(EMPTY_MODEL));
           if (hasPendingReset()) throw new Error("Reset pending");
         }
+        if (!current()) return;
         const cloud = await pullModel();
-        if (cancelled || !mounted.current) return;
-        if (cloud?.model) {
-          const cloudModel = normalizeModel(cloud.model);
-          if (cloudModel.seeded) {
-            setModel(cloudModel);
-            await storageSet(MODEL_KEY, JSON.stringify(cloudModel));
-            if (!cancelled && mounted.current) {
-              setAccountNotice("Welcome back — your saved Layer profile is ready.");
-            }
-            return;
-          }
+        if (!current()) return;
+        let restored = cloud?.model ? normalizeModel(cloud.model) : null;
+        let attach = false;
+        if (!restored?.seeded) {
+          const savedProfile = await pullProfile();
+          if (!current()) return;
+          restored = seededModelFromSetup(savedProfile?.climate, savedProfile?.tolerance);
+          // Only confirmed absence permits attaching a seeded device profile.
+          if (!restored && localModel.seeded) restored = localModel;
+          attach = Boolean(restored);
         }
-
-        // Recovery path for older/interrupted accounts: onboarding answers live
-        // in profiles independently from model_state. If model_state is missing,
-        // rebuild the same initial personalized model instead of incorrectly
-        // sending a known account back through onboarding.
-        const savedProfile = await pullProfile();
-        if (cancelled || !mounted.current) return;
-        const rebuilt = seededModelFromSetup(savedProfile?.climate, savedProfile?.tolerance);
-        if (rebuilt) {
-          setModel(rebuilt);
-          await storageSet(MODEL_KEY, JSON.stringify(rebuilt));
-          pushModel(rebuilt, totalObservations(rebuilt));
-          setAccountNotice("Welcome back — your Layer profile has been restored.");
-          return;
-        }
-
-        // A valid account can exist without a saved Layer model (for example,
-        // the address was just used for the first time). Do not call that an
-        // error. If this device already has a profile, attach it; otherwise keep
-        // onboarding open and explain that setup only needs to be completed once.
-        if (hadLocalProfile) {
-          setModel((current) => {
-            if (current?.seeded) pushModel(current, totalObservations(current));
-            return current;
-          });
-          setAccountNotice("Signed in — this device's Layer profile is now synced.");
+        if (restored?.seeded) {
+          modelRevision.current += 1;
+          setModel(restored);
+          await storageSet(MODEL_KEY, JSON.stringify(restored));
+          if (!current()) return;
+          if (attach) pushModel(restored, totalObservations(restored));
+          setAccountNotice(attach
+            ? "Your Layer profile is ready. Account sync will continue in the background."
+            : "Welcome back — your saved Layer profile is ready.");
+          finish("restored");
         } else {
           setAccountNotice("Signed in. No saved Layer profile was found yet — finish setup once to get started.");
+          finish("empty");
         }
       } catch {
-        if (!cancelled && mounted.current) {
-          setAccountRestoreError(true);
-        }
-      } finally {
-        if (!cancelled && mounted.current) setAccountRestoreBusy(false);
+        finish("error");
       }
     })();
-    return () => { cancelled = true; adoptedSignIn.current = 0; };
-    // model.seeded is captured intentionally at the moment this sign-in starts;
-    // including it as a dependency would cancel the restore as soon as the
-    // cloud model is applied.
+    return () => { cancelled = true; };
+    // Local initialization must finish first. Later model updates must not
+    // cancel an account restore or start another reconciliation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth.signedInAt, restoreAttempt]);
+  }, [ready, restoreKey]);
 
   const seed = useCallback((climateKey, tolKey, allowCloud = false) => {
-    // Record the consent choice BEFORE any model change triggers a sync.
+    // Permanent sign-in already opted into account sync; the anonymous
+    // checkbox must not turn that off when a genuinely empty account seeds.
+    allowCloud = auth.status === "permanent" || allowCloud;
     setCloudPref(allowCloud);
     setCloudState(allowCloud ? "connecting" : "device-only");
     const next = seededModelFromSetup(climateKey, tolKey);
     if (!next) return;
     commit(next);
     pushProfile({ climate: climateKey, tolerance: tolKey });
-  }, [commit]);
+  }, [commit, auth.status]);
 
   const connectCloud = useCallback(async () => {
     if (cloudState === "active") return true;
@@ -1626,15 +1637,12 @@ export default function Layer() {
   }, [accountNotice]);
 
   if (!ready || auth.status === "checking") return <LoadingScreen />;
-  const restoringSignedInProfile = !model.seeded && (
-    accountRestoreBusy || (auth.status === "permanent" && auth.signedInAt && auth.signedInAt !== adoptedSignIn.current)
-  );
-  if (restoringSignedInProfile) {
+  if (authExchangeBusy || restoreStatus === "pending") {
     return <LoadingScreen message="Loading your saved Layer profile…" />;
   }
-  if (accountRestoreError) return <div className="lyr weather-cloudy loading-screen"><style>{css}</style><main className="card glass unavailable" role="status">
+  if (restoreStatus === "error") return <div className="lyr weather-cloudy loading-screen"><style>{css}</style><main className="card glass unavailable" role="alert">
     <h1>Your saved profile couldn’t load</h1><p>Your account is signed in. Retry to restore your saved personalization.</p>
-    <button className="profile-primary" onClick={() => { adoptedSignIn.current = 0; setAccountRestoreError(false); setRestoreAttempt(n => n+1); }}>Retry profile</button>
+    <button className="profile-primary" onClick={() => setRestoreAttempt(n => n+1)}>Retry profile</button>
   </main></div>;
   if (!model.seeded) {
     return (

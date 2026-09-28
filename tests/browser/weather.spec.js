@@ -80,7 +80,7 @@ for(const age of [60_000,3600_000]) test(`cache age ${age} survives failure and 
   await page.getByRole('button',{name:'Refresh weather',exact:true}).click();
   await expect(page.locator('.weather-age')).toHaveText('Updated now');
 });
-for(const width of [320,375,430,768,1024,1440]) test(`responsive ${width}, keyboard profile and accessibility`,async({page})=>{
+for(const width of [320,375,393,430,768,1024,1440]) test(`responsive ${width}, keyboard profile and accessibility`,async({page})=>{
   await page.setViewportSize({width,height:900});
   await setup(page);
   await expect(page.getByText('Wear this',{exact:true})).toBeVisible();
@@ -209,4 +209,25 @@ test('feedback streak stays in feedback section and does not train just-right ra
   expect(audit.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,reason:n.failureSummary}))}))).toEqual([]);
   await page.setViewportSize({width:844,height:390});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+});
+test('200 percent text size keeps recommendation, planner and profile usable',async({page})=>{
+  await page.setViewportSize({width:1440,height:1000});
+  await setup(page);
+  const enlargeText=()=>page.evaluate(()=>{
+    const textNodes=[...document.querySelectorAll('body *')].filter(el=>!el.dataset.largeText && [...el.childNodes].some(node=>node.nodeType===Node.TEXT_NODE && node.textContent.trim()));
+    const sizes=textNodes.map(el=>parseFloat(getComputedStyle(el).fontSize)*2);
+    textNodes.forEach((el,i)=>{el.style.fontSize=`${sizes[i]}px`;el.dataset.largeText='true';});
+  });
+  await enlargeText();
+  await expect(page.getByText('Wear this',{exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.getByRole('button',{name:'Plan a later time'}).click();
+  await page.getByRole('button',{name:'Open profile and account'}).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await enlargeText();
+  await page.getByRole('button',{name:'Reset personalization'}).scrollIntoViewIfNeeded();
+  await page.getByRole('button',{name:'Reset personalization'}).click();
+  await expect(page.getByText('Start fresh?',{exact:true})).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button',{name:'Open profile and account'})).toBeFocused();
 });

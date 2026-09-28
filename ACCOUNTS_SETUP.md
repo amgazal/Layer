@@ -10,10 +10,11 @@ Enable the email provider in Supabase Authentication and configure email deliver
 
 In Supabase's authentication URL configuration, use:
 
-| Setting | Value for the existing Pages deployment |
+| Setting | Value for the primary custom domain |
 | --- | --- |
-| Site URL | `https://amgazal.github.io/Layer/` |
-| Allowed redirect URL | `https://amgazal.github.io/Layer/auth-callback.html` |
+| Site URL | `https://layer.amgazal.com/` |
+| Allowed redirect URL | `https://layer.amgazal.com/auth-callback.html` |
+| Legacy redirect (keep during migration) | `https://amgazal.github.io/Layer/auth-callback.html` |
 | Local redirect URL | `http://localhost:5173/auth-callback.html` |
 
 For another deployment or local port, allow its exact `auth-callback.html` URL. The callback is a real static file so GitHub Pages can serve it without route rewrites.
@@ -51,3 +52,7 @@ Before sharing a configured build:
 - Check the original-tab handoff and the fallback with the original tab closed.
 - Confirm returning-user sign-in can restore a profile before onboarding.
 - Sign out and confirm local use remains available. The current implementation keeps the local calibration on sign-out.
+
+Email delivery and the branded sender `Layer <layer@auth.amgazal.com>` are already configured externally. This repository does not store SMTP/Resend credentials or manage DNS or dashboard email templates.
+
+Account restoration waits for local initialization, then restores the saved model or rebuilds from saved setup answers. Only confirmed absence of both cloud records and a seeded local profile leads to setup. Failed reads show Retry without writing a new model. A seeded local profile attaches only after those reads confirm no recoverable cloud profile.

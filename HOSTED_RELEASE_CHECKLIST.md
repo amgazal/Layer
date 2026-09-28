@@ -83,8 +83,8 @@ users enabled; Google, Apple and all listed external OAuth providers disabled.
 GitHub has no `VITE_AUTH_PROVIDERS` repository variable. No OAuth flow is claimed.
 These public settings do not expose the Site URL or redirect allowlist.
 
-Verify Site URL `https://amgazal.github.io/Layer/` and allowed redirect
-`https://amgazal.github.io/Layer/auth-callback.html` in hosted Auth settings.
+Verify Site URL `https://layer.amgazal.com/` and allowed redirect
+`https://layer.amgazal.com/auth-callback.html` in hosted Auth settings.
 Pages reports no custom domain; no future domain needs activation in this pass.
 Use a real test email in the production UI, open its link in the same browser,
 verify original-tab PKCE handoff and original-tab-closed fallback, then returning

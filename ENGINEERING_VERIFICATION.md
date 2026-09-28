@@ -284,3 +284,113 @@ Initial npm/Docker/browser runs were blocked by sandbox networking/socket/port r
 5. **Synchronization limits:** independent histories are not merged; simultaneous-device snapshots can conflict. This pass does not replace the backend or introduce many context-specific personalization parameters.
 6. **CI:** source/unit/build/browser/production checks are wired into workflows; see the release-pass section above for actual hosted run status. Docker-based account tests remain an explicit local command to avoid making routine Pages deployment depend on a larger service stack.
 7. **Scope:** no redesign, LLM, social features, wardrobe database, new domain, analytics, maps, notifications or deployment was added. No claim of scientifically validated clothing advice or completed user-study results is made.
+
+## Final restoration release pass — September 28, 2026
+
+Started on clean `main` at `ad560b21bce0376b503cc42ca20f9973fda10e0a`.
+No recommendation/weather coefficients, feedback learning, dependencies, schema,
+DNS, SMTP/Resend configuration, hosted templates or domain records changed.
+
+### Reproduced returning-user failure and fix
+
+A local `storageGet(MODEL_KEY)` could complete after permanent-account restoration
+and call `setModel` with an older unseeded snapshot. Initialization had no per-effect
+cancellation; StrictMode's first read remained live after cleanup. The restore ref
+recorded a started sign-in, not an outcome. After the late local read, that ref still
+matched, busy was false, and onboarding rendered with the misleading “saved profile
+is ready” notice. The new browser regression reproduces this exact ordering on the
+original source: onboarding first, successful sign-in, asynchronous cloud restore,
+then release of the stale local read. It failed before the fix and passes afterward.
+This establishes a concrete failure path, not forensic proof of the production
+user's browser/storage timing, for which no recording or telemetry was supplied.
+
+Local initialization now cancels obsolete effect runs. Permanent-account restore
+waits for local readiness and owns account reconciliation. An account/session/retry
+key derives `pending` in render before the effect starts. Explicit outcomes are
+`restored`, `empty`, and `error`; nonpermanent sessions are `idle`. Pending and error
+replace the app surface, so neither setup nor profile-dependent actions remain
+interactive behind them. Model updates do not cancel/restart the restore effect.
+
+A saved seeded cloud model wins over local history on sign-in. Missing model state
+falls back to saved setup answers, then a seeded local profile only if no recoverable
+cloud setup exists. Those two recovery paths persist locally and queue the existing
+cloud mirror. Copy promises background sync, not a completed upload. Only confirmed
+absence of all three permits setup. Failed reads do not seed/write; Retry starts a
+new attempt. Pending-reset and account-bound feedback protections remain intact.
+
+### Other defects and narrowly scoped polish
+
+- Completing setup for a genuinely empty permanent account incorrectly used the
+  unchecked anonymous-sync option to turn cloud off. A behavioral test reproduced
+  preference `off` and missing writes. Permanent-account setup now retains account
+  sync; its copy describes saving to the account and hides the anonymous option.
+- The original tab's `exchanging` flag stayed true after a successful callback,
+  blocking a second sign-in in that tab. Per-code deduplication now survives
+  StrictMode cleanup while allowing a new code. Stored-code and second-sign-in
+  browser tests cover both paths.
+- Storage-only callback handoff lacked an acknowledgment/completion channel and
+  could fall back with an already-exchanged code. Nonce-matched storage responses
+  now mirror BroadcastChannel responses. Both transports are tested with the real
+  static callback, including successful completion and second sign-in. No tokens
+  are put in the new response storage entry.
+- Restore revisions now increase monotonically; rapid sign-out/sign-in cannot
+  collide within a millisecond. Duplicate/focus/initial-session events retain the
+  same revision. External sign-out cancels pending model writes. Unit tests cover
+  these session-boundary cases.
+- Removed premature “profile is synced/ready” claims from auth-only success copy;
+  restore errors are announced with an accessible alert and keyboard Retry.
+  The static callback spinner now respects reduced motion. No visual redesign.
+
+### Domain, security and QA coverage
+
+README's primary demo is `https://layer.amgazal.com`. Current account/pilot/release
+checklists and canonical/Open Graph metadata use the custom domain. Historical
+verification references remain unchanged. Relative manifest and asset URLs remain
+valid at root and `/Layer/`. Unit tests exercise the actual callback URL derivation
+for both domains; browser tests exercise same-origin fallback at both paths without
+following an injected external `next` value. Legacy callback allowlisting remains
+documented; no hosted allowlist was changed.
+
+Browser QA covers 320/375/393/430/768/1024/1440 px, 768×390 and 844×390 landscape,
+onboarding, email sent, restore pending/error, hero, stale warning, planner,
+feedback, profile, focus trapping/restoration and reset confirmation. Axe includes
+loading/error and existing app states. A 200% text-size test checks recommendation,
+planner and scrollable profile/reset controls. An initial CSS-body-zoom test was
+replaced because CSS zoom does not reproduce browser viewport-unit sizing.
+393 px restore-error and 375 px full-page screenshots were visually reviewed.
+
+Security scans cover tracked/build private-key, Supabase secret/service-role and
+Resend-key patterns plus filesystem-picker calls. Application inspection found no
+SMTP credentials, email-delivery implementation or dangerous HTML injection.
+Precise coordinate nonpersistence remains tested. Real local RLS/ownership/reset
+checks passed; this does not claim inspection of hosted dashboard/schema state.
+
+### Commands and results before deployment
+
+| Command | Result | Count |
+| --- | --- | --- |
+| `npm ci` | PASS | 106 packages installed |
+| `npm audit` | PASS | 0 vulnerabilities |
+| `npm run verify` | PASS | 79 source checks; 110 unit tests / 7 files; build/security |
+| `npm run test:browser` | PASS | 44 tests |
+| `npm run test:auth` | PASS | 3 real local account tests |
+| `npm run test:production` | PASS | 2 root/legacy build tests |
+| `npm run test:integration` | PASS | 29 checks |
+| `npm run smoke:local` | PASS | 15 checks |
+
+The existing isolated `layer-verification` stack at 127.0.0.1:55421 was resumed;
+no database reset or migration was required. Integration/account tests clean their
+application rows; smoke retains its local rows and prints cleanup SQL. Local Auth
+users remain available for inspection. No destructive test targets production.
+
+Production deployment/smoke results are appended after deployment. The checked-in
+`node scripts/production-smoke.mjs` checks only the public domain and disposable
+browser-local personalization; it sends no email and writes no hosted account data.
+
+Remaining manual acceptance: on the deployed custom domain, use an authorized
+existing account with saved personalization. Start with a fresh browser profile,
+choose Sign in, request/open its email link in the same browser, and verify loading
+then the saved personalized main experience with no setup questions. Repeat with
+the original tab closed to check the email-app/new-tab fallback. A production test
+account/email interaction was not supplied. Physical iOS/Android email-app behavior
+and hosted schema/dashboard inspection are not claimed by local automation.

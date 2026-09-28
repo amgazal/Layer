@@ -31,3 +31,49 @@ test('restoration failure can retry without onboarding or overwriting cloud; sig
   expect(await page.evaluate(()=>localStorage.getItem('layer:cloud-pref'))).toBe('off');
   await client.from('model_state').delete().eq('user_id',id);
 });
+
+for(const source of ['model','setup'])test(`real account signs in from onboarding and restores ${source} without intermediate setup`,async({page})=>{
+  const client=createClient(process.env.VITE_SUPABASE_URL,process.env.VITE_SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+  const email=`restore-${crypto.randomUUID()}@example.test`,password=`Test-${crypto.randomUUID()}!`;
+  const {data,error}=await client.auth.signUp({email,password});expect(error).toBeNull();
+  const id=data.user.id;
+  if(source==='model')expect((await client.from('model_state').insert({user_id:id,model,observations:5})).error).toBeNull();
+  else expect((await client.from('profiles').insert({id,climate:'tropical',tolerance:'colder'})).error).toBeNull();
+  let release;const gate=new Promise(resolve=>release=resolve);
+  await page.route('**/api.open-meteo.com/**',r=>r.abort());
+  await page.route('**/rest/v1/model_state*',async route=>{
+    if(route.request().method()==='GET')await gate;
+    await route.continue();
+  });
+  try {
+    await page.goto('/');
+    await expect(page.getByRole('button',{name:'Sign in',exact:true})).toBeVisible();
+    await page.evaluate(async({email,password})=>{
+      const {supabase}=await import('/src/lib/supabase.js');
+      const {subscribeAuth}=await import('/src/lib/sync.js');
+      window.setupFlashes=[];
+      subscribeAuth(auth=>{
+        if(auth.status!=='permanent')return;
+        new MutationObserver(()=>{
+          if(document.querySelector('.ob-q'))window.setupFlashes.push(true);
+        }).observe(document.getElementById('root'),{childList:true,subtree:true});
+      });
+      const {error}=await supabase.auth.signInWithPassword({email,password});
+      if(error)throw error;
+    },{email,password});
+    await expect(page.getByText('Loading your saved Layer profile…')).toBeVisible();
+    await expect(page.locator('.ob-q')).toHaveCount(0);
+    release();
+    await expect(page.getByRole('heading',{name:'Weather unavailable'})).toBeVisible();
+    const restored=await page.evaluate(()=>JSON.parse(localStorage.getItem('layer:model:v5')));
+    expect(restored.seeded).toBe(true);
+    expect(restored.regime.cold.off).toBe(source==='model'?-3:-10);
+    expect(await page.evaluate(()=>window.setupFlashes)).toEqual([]);
+    await page.evaluate(async()=>{await (await import('/src/lib/sync.js')).flushPendingModel();});
+    expect((await client.from('model_state').select('model').single()).data.model).toEqual(restored);
+  } finally {
+    release();
+    await client.from('model_state').delete().eq('user_id',id);
+    await client.from('profiles').delete().eq('id',id);
+  }
+});

@@ -10,7 +10,7 @@ This is a plan for a small Cornell campus pilot, not a record of completed testi
 4. Run `npm run verify`, then `npm run smoke` against a development Supabase project. The smoke script creates test users and data and prints cleanup SQL.
 5. Deploy through the included Pages workflow and run the checks below on the deployed build.
 
-The email callback for the existing deployment is `https://amgazal.github.io/Layer/auth-callback.html`. Allow that URL in Supabase, plus `http://localhost:5173/auth-callback.html` for local testing.
+The email callback for the existing deployment is `https://layer.amgazal.com/auth-callback.html`. Allow that URL in Supabase, plus `http://localhost:5173/auth-callback.html` for local testing.
 
 ## Device checks
 

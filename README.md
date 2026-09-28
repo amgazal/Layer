@@ -2,7 +2,7 @@
 
 Layer turns Cornell/Ithaca weather into clothing guidance based on your comfort profile, activity, and the weather expected during your outing.
 
-[Demo](https://amgazal.github.io/Layer/)
+[Demo](https://layer.amgazal.com)
 
 ## Weather and trust
 
